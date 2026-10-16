@@ -63,6 +63,42 @@ def estimate_interior_glass_temp(
     return round(glass_temp, 2)
 
 
+def calculate_rh_for_dew_point(temp_c: float, dew_point_c: float) -> float:
+    """
+    Relative humidity in percent that yields dew_point_c at temp_c.
+    Inverse of calculate_dew_point.
+    """
+    alpha_dew = (MAGNUS_A * dew_point_c) / (MAGNUS_B + dew_point_c)
+    alpha_in = (MAGNUS_A * temp_c) / (MAGNUS_B + temp_c)
+    rh = 100.0 * math.exp(alpha_dew - alpha_in)
+    return max(0.001, min(100.0, rh))
+
+
+def resolve_safe_dew_point(
+    indoor_temp_c: float,
+    outdoor_temp_c: float,
+    glazing: GlazingType = GlazingType.DOUBLE,
+    safety_margin_c: float = 1.5,
+) -> float:
+    """
+    Highest indoor dew point that keeps the interior glass surface at least
+    safety_margin_c above the dew point.
+    """
+    glass_temp = estimate_interior_glass_temp(indoor_temp_c, outdoor_temp_c, glazing)
+    return round(glass_temp - safety_margin_c, 2)
+
+
+def quantize_rh(value: float, step: int, min_rh: int, max_rh: int) -> int:
+    """
+    Round value to the nearest multiple of step, then clamp to [min_rh, max_rh].
+    """
+    if step < 1:
+        step = 1
+    clamped = max(min_rh, min(max_rh, value))
+    rounded = int(round(clamped / step)) * step
+    return max(min_rh, min(max_rh, rounded))
+
+
 def calculate_condensation_safe_rh(
     indoor_temp_c: float,
     outdoor_temp_c: float,
@@ -72,16 +108,9 @@ def calculate_condensation_safe_rh(
     max_rh: int = 65,
 ) -> int:
     """
-    Compute maximum allowable indoor relative humidity such that the indoor
-    dew point remains strictly below the window glass temperature by safety_margin_c.
+    Highest indoor relative humidity (clamped to [min_rh, max_rh]) that keeps the
+    indoor dew point safety_margin_c below the interior glass temperature.
     """
-    glass_temp = estimate_interior_glass_temp(indoor_temp_c, outdoor_temp_c, glazing)
-    safe_dew_point = glass_temp - safety_margin_c
-
-    alpha_dew = (MAGNUS_A * safe_dew_point) / (MAGNUS_B + safe_dew_point)
-    alpha_in = (MAGNUS_A * indoor_temp_c) / (MAGNUS_B + indoor_temp_c)
-
-    max_safe_rh = 100.0 * math.exp(alpha_dew - alpha_in)
-    safe_target = int(round(max_safe_rh))
-
+    safe_dew_point = resolve_safe_dew_point(indoor_temp_c, outdoor_temp_c, glazing, safety_margin_c)
+    safe_target = int(round(calculate_rh_for_dew_point(indoor_temp_c, safe_dew_point)))
     return max(min_rh, min(max_rh, safe_target))

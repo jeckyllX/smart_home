@@ -38,6 +38,18 @@ def test_device_registry_operations():
     assert len(sensors) == 2
 
 
+def test_virtual_dehumidifier_quantizes_target_to_step():
+    dehum = VirtualDehumidifier(device_id="dh_q", name="Quantiser", room="living_room")
+    dehum.set_target_humidity(47)
+    assert dehum.target_humidity_percent == 45
+    dehum.set_target_humidity(10)
+    assert dehum.target_humidity_percent == 35
+    dehum.set_target_humidity(90)
+    assert dehum.target_humidity_percent == 70
+    assert dehum.humidity_range == (35, 70)
+    assert dehum.humidity_step == 5
+
+
 def test_event_bus():
     bus = EventBus()
     received_events = []

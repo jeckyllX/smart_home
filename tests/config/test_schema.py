@@ -99,3 +99,24 @@ def test_smarthome_config_from_dict_multi_device_format():
     assert cfg.tuya_devices[0]["room"] == "living_room"
     assert cfg.tuya_devices[1]["room"] == "bedroom"
     assert cfg.condensation.glazing == GlazingType.TRIPLE
+
+
+def test_condensation_new_keys_parsed():
+    payload = {
+        "location": {"latitude": 0.0, "longitude": 0.0, "city": "Unknown"},
+        "condensation": {
+            "enabled": True,
+            "target_dew_point_c": 12.5,
+            "rh_deadband": 3,
+        },
+    }
+    cfg = SmartHomeConfig.from_dict(payload)
+    assert cfg.condensation.target_dew_point_c == 12.5
+    assert cfg.condensation.rh_deadband == 3
+
+
+def test_condensation_new_keys_default():
+    payload = {"location": {"latitude": 0.0, "longitude": 0.0, "city": "Unknown"}}
+    cfg = SmartHomeConfig.from_dict(payload)
+    assert cfg.condensation.target_dew_point_c is None
+    assert cfg.condensation.rh_deadband == 5

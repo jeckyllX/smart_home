@@ -18,7 +18,9 @@
         "default_indoor_temp_c": 20.0,
         "min_target_rh": 45,
         "max_target_rh": 60,
-        "safety_margin_c": 1.5
+        "safety_margin_c": 1.5,
+        "target_dew_point_c": null,
+        "rh_deadband": 5
     },
     "quiet_schedule": {
         "enabled": true,

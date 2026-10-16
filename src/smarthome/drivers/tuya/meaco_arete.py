@@ -20,8 +20,26 @@ from smarthome.core.events import (
 from smarthome.core.registry import DeviceRegistry
 from smarthome.devices.climate import DehumidifierDevice
 from smarthome.drivers.base import Driver
+from smarthome.physics.psychrometrics import quantize_rh
 
 logger = logging.getLogger("TuyaMeacoDriver")
+
+# DP 19 is a status bitmap, one flag per bit.
+STATUS_FLAG_NAMES: dict[int, str] = {
+    1: "tankfull",
+    2: "defrost",
+    4: "E1",
+    8: "E2",
+    16: "L2",
+    32: "L3",
+    64: "L4",
+    128: "wet",
+}
+
+
+def decode_status_flags(code: int) -> tuple[str, ...]:
+    """Names of the status flags set in the DP 19 bitmap, lowest bit first."""
+    return tuple(name for bit, name in STATUS_FLAG_NAMES.items() if code & bit)
 
 
 class MeacoAreteTuyaDevice(DehumidifierDevice):
@@ -35,10 +53,14 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
     DP_CHILD_LOCK = "14"
     DP_CURRENT_HUMIDITY = "16"
     DP_OFF_TIMER = "17"
-    DP_FAULT_CODE = "19"
+    DP_STATUS_FLAGS = "19"
     DP_ON_TIMER = "101"
 
     MODES = ["manual", "sleep", "laundry", "purify"]
+
+    # Target humidity data point: min 35%, max 70%, step 5%.
+    HUMIDITY_RANGE = (35, 70)
+    HUMIDITY_STEP = 5
 
     def __init__(
         self,
@@ -102,6 +124,11 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
                 self._is_online = False
                 logger.error("Error refreshing device '%s': %s", self.name, e)
                 return False
+
+    @property
+    def raw_dps(self) -> dict[str, Any]:
+        """Copy of the last raw data points read from the device."""
+        return dict(self._cached_dps)
 
     def _dispatch_changes(self, old_dps: dict[str, Any], new_dps: dict[str, Any]) -> None:
         if not self.event_bus:
@@ -171,11 +198,16 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
 
     @property
     def humidity_range(self) -> tuple[int, int]:
-        return 30, 80
+        return self.HUMIDITY_RANGE
+
+    @property
+    def humidity_step(self) -> int:
+        return self.HUMIDITY_STEP
 
     def set_target_humidity(self, target_percent: int) -> bool:
-        target_percent = max(30, min(80, int(target_percent)))
-        return self._send_command(self.DP_TARGET_HUMIDITY, target_percent, "set_target_humidity")
+        low, high = self.HUMIDITY_RANGE
+        target = quantize_rh(int(target_percent), self.HUMIDITY_STEP, low, high)
+        return self._send_command(self.DP_TARGET_HUMIDITY, target, "set_target_humidity")
 
     # --- ModeControlTrait ---
 
@@ -193,28 +225,26 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
             raise ValueError(f"Mode '{mode}' not supported. Options: {self.MODES}")
         return self._send_command(self.DP_MODE, mode_str, "set_mode")
 
-    # --- TankLevelTrait & FaultSensorTrait ---
+    # --- TankLevelTrait & StatusFlagsTrait ---
+
+    @property
+    def status_flags(self) -> tuple[str, ...]:
+        """
+        Names of the active DP 19 status flags.
+
+        'wet' is set by the built-in humidity sensor reading above 70%. That
+        sensor reads high on this unit and the flag is also set while the device
+        is off, so 'wet' is informational only. 'defrost' is normal operation.
+        """
+        code = self._cached_dps.get(self.DP_STATUS_FLAGS, 0)
+        try:
+            return decode_status_flags(int(code or 0))
+        except (TypeError, ValueError):
+            return ()
 
     @property
     def is_tank_full(self) -> bool:
-        fault_code = int(self._cached_dps.get(self.DP_FAULT_CODE, 0))
-        return bool(fault_code & 128)
-
-    @property
-    def has_fault(self) -> bool:
-        fault_code = int(self._cached_dps.get(self.DP_FAULT_CODE, 0))
-        return fault_code != 0
-
-    @property
-    def fault_description(self) -> str | None:
-        fault_code = int(self._cached_dps.get(self.DP_FAULT_CODE, 0))
-        if fault_code == 0:
-            return None
-        if fault_code & 128:
-            return "Water tank is full or removed"
-        if fault_code & 4:
-            return "Defrost cycle active"
-        return f"Operational fault code {fault_code}"
+        return "tankfull" in self.status_flags
 
     # --- Socket Command Helper ---
 

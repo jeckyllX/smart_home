@@ -8,11 +8,11 @@ from abc import ABC
 
 from smarthome.core.device import Device, DeviceCategory
 from smarthome.core.traits import (
-    FaultSensorTrait,
     HumidityControlTrait,
     HumiditySensorTrait,
     ModeControlTrait,
     OnOffTrait,
+    StatusFlagsTrait,
     TankLevelTrait,
     TemperatureSensorTrait,
 )
@@ -25,7 +25,7 @@ class DehumidifierDevice(
     HumiditySensorTrait,
     ModeControlTrait,
     TankLevelTrait,
-    FaultSensorTrait,
+    StatusFlagsTrait,
     ABC,
 ):
     """
@@ -54,7 +54,7 @@ class DehumidifierDevice(
         self.register_trait(HumiditySensorTrait, self)
         self.register_trait(ModeControlTrait, self)
         self.register_trait(TankLevelTrait, self)
-        self.register_trait(FaultSensorTrait, self)
+        self.register_trait(StatusFlagsTrait, self)
 
 
 class ClimateSensorDevice(Device, TemperatureSensorTrait, HumiditySensorTrait, ABC):

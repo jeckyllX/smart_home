@@ -62,6 +62,8 @@ class SmartHomeApplication:
                     min_target_rh=c_cfg.min_target_rh,
                     max_target_rh=c_cfg.max_target_rh,
                     safety_margin_c=c_cfg.safety_margin_c,
+                    target_dew_point_c=c_cfg.target_dew_point_c,
+                    rh_deadband=c_cfg.rh_deadband,
                 )
             )
 

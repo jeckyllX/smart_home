@@ -27,6 +27,8 @@ class CondensationAutomationConfig:
     min_target_rh: int = 40
     max_target_rh: int = 60
     safety_margin_c: float = 1.5
+    target_dew_point_c: float | None = None
+    rh_deadband: int = 5
 
 
 @dataclass
@@ -80,6 +82,7 @@ class SmartHomeConfig:
         except ValueError:
             glazing = GlazingType.DOUBLE
 
+        target_dew_point_raw = cond_data.get("target_dew_point_c")
         condensation = CondensationAutomationConfig(
             enabled=bool(cond_data.get("enabled", True)),
             glazing=glazing,
@@ -92,6 +95,10 @@ class SmartHomeConfig:
             min_target_rh=int(cond_data.get("min_target_rh", 40)),
             max_target_rh=int(cond_data.get("max_target_rh", 60)),
             safety_margin_c=float(cond_data.get("safety_margin_c", 1.5)),
+            target_dew_point_c=(
+                float(target_dew_point_raw) if target_dew_point_raw is not None else None
+            ),
+            rh_deadband=int(cond_data.get("rh_deadband", 5)),
         )
 
         # Quiet Schedule (canonical key first, legacy alias as fallback)

@@ -60,6 +60,11 @@ class HumidityControlTrait(Protocol):
         """Returns allowed (min, max) target relative humidity bounds."""
         ...
 
+    @property
+    def humidity_step(self) -> int:
+        """Returns the increment in percent between allowed targets (1 = no step)."""
+        ...
+
     def set_target_humidity(self, target_percent: int) -> bool:
         """Adjust humidistat setpoint."""
         ...
@@ -95,17 +100,15 @@ class TankLevelTrait(Protocol):
 
 
 @runtime_checkable
-class FaultSensorTrait(Protocol):
-    """Capability to report diagnostic faults or operational warnings."""
+class StatusFlagsTrait(Protocol):
+    """Capability to report named status flags from the device."""
 
     @property
-    def has_fault(self) -> bool:
-        """Returns True if device is in an error or safety lockout state."""
-        ...
-
-    @property
-    def fault_description(self) -> str | None:
-        """Human-readable fault description."""
+    def status_flags(self) -> tuple[str, ...]:
+        """
+        Names of the flags the device currently reports, or an empty tuple.
+        Flag names are driver-defined (for example 'tankfull', 'defrost', 'wet').
+        """
         ...
 
 
@@ -116,7 +119,7 @@ ALL_TRAITS: tuple[type, ...] = (
     HumidityControlTrait,
     ModeControlTrait,
     TankLevelTrait,
-    FaultSensorTrait,
+    StatusFlagsTrait,
 )
 
 

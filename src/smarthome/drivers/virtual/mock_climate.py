@@ -5,6 +5,7 @@ Virtual and simulation devices for testing multi-device topologies.
 from __future__ import annotations
 
 from smarthome.devices.climate import ClimateSensorDevice, DehumidifierDevice
+from smarthome.physics.psychrometrics import quantize_rh
 
 
 class VirtualClimateSensor(ClimateSensorDevice):
@@ -57,6 +58,9 @@ class VirtualDehumidifier(DehumidifierDevice):
     Simulated dehumidifier appliance for integration testing.
     """
 
+    HUMIDITY_RANGE = (35, 70)
+    HUMIDITY_STEP = 5
+
     def __init__(
         self,
         device_id: str,
@@ -74,7 +78,9 @@ class VirtualDehumidifier(DehumidifierDevice):
         self._target_rh = 55
         self._current_rh = 60.0
         self._mode = "manual"
-        self._tank_full = False
+        self._status_flags: set[str] = set()
+        # Number of times set_target_humidity was called; used by tests.
+        self.set_target_calls = 0
 
     @property
     def is_online(self) -> bool:
@@ -105,10 +111,16 @@ class VirtualDehumidifier(DehumidifierDevice):
 
     @property
     def humidity_range(self) -> tuple[int, int]:
-        return 30, 80
+        return self.HUMIDITY_RANGE
+
+    @property
+    def humidity_step(self) -> int:
+        return self.HUMIDITY_STEP
 
     def set_target_humidity(self, target_percent: int) -> bool:
-        self._target_rh = max(30, min(80, target_percent))
+        low, high = self.HUMIDITY_RANGE
+        self._target_rh = quantize_rh(int(target_percent), self.HUMIDITY_STEP, low, high)
+        self.set_target_calls += 1
         return True
 
     @property
@@ -126,16 +138,21 @@ class VirtualDehumidifier(DehumidifierDevice):
         return False
 
     @property
+    def status_flags(self) -> tuple[str, ...]:
+        return tuple(sorted(self._status_flags))
+
+    def set_status_flags(self, *flags: str) -> None:
+        self._status_flags = set(flags)
+
+    @property
     def is_tank_full(self) -> bool:
-        return self._tank_full
+        return "tankfull" in self._status_flags
 
     def set_tank_full(self, full: bool) -> None:
-        self._tank_full = full
+        if full:
+            self._status_flags.add("tankfull")
+        else:
+            self._status_flags.discard("tankfull")
 
-    @property
-    def has_fault(self) -> bool:
-        return self._tank_full
-
-    @property
-    def fault_description(self) -> str | None:
-        return "Tank full" if self._tank_full else None
+    def set_current_humidity(self, rh_pct: float) -> None:
+        self._current_rh = rh_pct

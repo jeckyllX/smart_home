@@ -3,7 +3,7 @@
 Climate control for a Raspberry Pi. Each device exposes capabilities as
 runtime-checkable `typing.Protocol` traits (`OnOffTrait`, `HumidityControlTrait`,
 `HumiditySensorTrait`, `TemperatureSensorTrait`, `ModeControlTrait`,
-`TankLevelTrait`, `FaultSensorTrait`). Automations select devices by trait and
+`TankLevelTrait`, `StatusFlagsTrait`). Automations select devices by trait and
 room.
 
 ---
@@ -78,8 +78,11 @@ Each driver targets one device model and maps its protocol to those traits.
 
 - `tuya/meaco_arete.py` — `TuyaDriver` talks to Meaco Arete Two dehumidifiers over
   the local Tuya protocol (v3.5) and produces `MeacoAreteTuyaDevice`. Holds the
-  model's data-point IDs, mode names, humidity range (30-80%), and fault-bit
-  meanings.
+  model's data-point IDs, mode names, humidity range (35-70% in 5% steps), and
+  status-flag names (DP 19 bitmap: `tankfull`, `defrost`, `E1`, `E2`, `L2`, `L3`,
+  `L4`, `wet`). The `wet` flag tracks the built-in sensor reading above 70%; that
+  sensor reads high and the flag is also set while the device is off, so it is
+  informational.
 - `weather/open_meteo.py` — `OpenMeteoDriver` reads temperature and humidity from
   the Open-Meteo HTTP API (900 s cache) and registers `OpenMeteoWeatherDevice` in
   the `outdoor` room.
@@ -88,17 +91,23 @@ Each driver targets one device model and maps its protocol to those traits.
 
 ### `src/smarthome/automations/`
 - `CondensationPreventionAutomation` — for each room that has a dehumidifier,
-  reads the room temperature/humidity and the outdoor temperature, estimates the
-  interior glass temperature from the glazing type, and sets the dehumidifier's
-  target humidity so the indoor dew point stays below the glass temperature. Uses
-  the Magnus-Tetens formulas in `physics/psychrometrics.py`.
+  resolves a safe indoor dew point and sets the target humidity so the room stays
+  below it. In window mode it estimates the interior glass temperature from the
+  outdoor temperature and the glazing type; in fixed mode it uses the configured
+  `target_dew_point_c` and needs no outdoor sensor. The target is clamped to the
+  overlap of the configured bounds and the device range, snapped to the device
+  step, and only written when the move exceeds `rh_deadband`. Uses the
+  Magnus-Tetens formulas in `physics/psychrometrics.py`.
 - `QuietScheduleAutomation` — switches devices in the selected rooms to the night
   mode (default `sleep`) during a configured time window, and back to the day mode
   (default `manual`) outside it.
 
 ### `src/smarthome/physics/psychrometrics.py`
-Magnus-Tetens dew point, interior glass temperature estimate, and the maximum safe
-indoor relative humidity (`calculate_condensation_safe_rh`).
+Magnus-Tetens dew point and its inverse (`calculate_dew_point`,
+`calculate_rh_for_dew_point`), the interior glass temperature estimate, the safe
+dew point (`resolve_safe_dew_point`), the maximum safe indoor relative humidity
+(`calculate_condensation_safe_rh`), and humidity setpoint snapping
+(`quantize_rh`).
 
 ---
 
@@ -122,6 +131,12 @@ The CLI is installed at `.venv/bin/smarthome`.
 ```bash
 .venv/bin/smarthome status <device_id>
 .venv/bin/smarthome status weather_outdoor
+```
+
+### Print raw data points
+```bash
+# Raw Tuya data points and the decoded status flags, for a Tuya device
+.venv/bin/smarthome probe <device_id>
 ```
 
 ### Set target humidity or mode

@@ -17,11 +17,13 @@ from smarthome.core.traits import (
     HumiditySensorTrait,
     ModeControlTrait,
     OnOffTrait,
+    StatusFlagsTrait,
     TankLevelTrait,
     TemperatureSensorTrait,
     resolve_trait,
     trait_names,
 )
+from smarthome.physics.psychrometrics import quantize_rh
 
 logging.basicConfig(
     level=logging.INFO,
@@ -116,6 +118,38 @@ def cmd_status(args):
     tank = dev.get_trait(TankLevelTrait)
     if tank:
         print(f"  Tank Full:          {tank.is_tank_full}")
+
+    flags_trait = dev.get_trait(StatusFlagsTrait)
+    if flags_trait:
+        flags = flags_trait.status_flags
+        print(f"  Status Flags:       {', '.join(flags) if flags else 'none'}")
+    print()
+
+
+def _dp_sort_key(key: str) -> tuple[int, str]:
+    """Sort numeric data-point ids numerically; non-numeric ids sort last."""
+    return (0, key.zfill(6)) if key.isdigit() else (1, key)
+
+
+def cmd_probe(args):
+    app = get_app(args.config)
+    dev = app.registry.get(args.device_id)
+    if not dev:
+        sys.exit(f"Device '{args.device_id}' not found.")
+
+    dev.refresh()
+    raw = getattr(dev, "raw_dps", None)
+    if raw is None:
+        sys.exit(f"Device '{dev.name}' does not expose raw data points.")
+
+    print(f"\n--- Raw Data Points: {dev.name} ({dev.id}) ---")
+    for key in sorted(raw, key=_dp_sort_key):
+        print(f"  DP {key:<5}= {raw[key]}")
+
+    flags_trait = dev.get_trait(StatusFlagsTrait)
+    if flags_trait:
+        flags = flags_trait.status_flags
+        print(f"\n  Status Flags: {', '.join(flags) if flags else 'none'}")
     print()
 
 
@@ -133,6 +167,13 @@ def cmd_set_target(args):
     min_h, max_h = ctrl.humidity_range
     if not (min_h <= target <= max_h):
         sys.exit(f"Target humidity must be between {min_h}% and {max_h}%.")
+
+    step = ctrl.humidity_step
+    if step > 1:
+        snapped = quantize_rh(target, step, min_h, max_h)
+        if snapped != target:
+            print(f"Note: {target}% is not a multiple of the {step}% step; using {snapped}%.")
+            target = snapped
 
     success = ctrl.set_target_humidity(target)
     if success:
@@ -207,6 +248,13 @@ def main():
     p_mode.add_argument("device_id", help="Target device ID")
     p_mode.add_argument("mode", help="Operational mode string")
     p_mode.set_defaults(func=cmd_set_mode)
+
+    # probe
+    p_probe = subparsers.add_parser(
+        "probe", help="Print the raw data points and status flags of a device"
+    )
+    p_probe.add_argument("device_id", help="Target device ID")
+    p_probe.set_defaults(func=cmd_probe)
 
     # evaluate
     p_eval = subparsers.add_parser(
