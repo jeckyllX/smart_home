@@ -1,0 +1,31 @@
+{
+    "device": {
+        "ip": "192.168.1.100",
+        "dev_id": "YOUR_DEVICE_ID",
+        "local_key": "YOUR_16_CHAR_LOCAL_KEY",
+        "version": 3.5,
+        "room": "living_room",
+        "name": "Meaco Arete Two"
+    },
+    "location": {
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "city": "Your City"
+    },
+    "condensation": {
+        "enabled": true,
+        "glazing": "double",
+        "default_indoor_temp_c": 20.0,
+        "min_target_rh": 45,
+        "max_target_rh": 60,
+        "safety_margin_c": 1.5
+    },
+    "quiet_schedule": {
+        "enabled": true,
+        "start_time": "23:00",
+        "end_time": "07:00",
+        "night_mode": "sleep",
+        "day_mode": "manual"
+    },
+    "polling_interval_seconds": 60
+}

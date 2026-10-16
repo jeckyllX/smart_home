@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smarthome-control"
+version = "0.2.0"
+description = "Trait-based smart home device and automation platform for a Raspberry Pi"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "tinytuya>=1.20.0",
+    "requests>=2.28.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+]
+
+[project.scripts]
+smarthome = "smarthome.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+packages = ["smarthome"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+# Trait registries pass Protocol classes (never instantiated) as `type[T]`;
+# mypy's abstract-class check does not model this pattern.
+disable_error_code = ["type-abstract"]
+
+[[tool.mypy.overrides]]
+module = "tinytuya"
+ignore_missing_imports = true

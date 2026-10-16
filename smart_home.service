@@ -1,0 +1,12 @@
+[Unit]
+Description=Smart Home Climate Automation Daemon
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_DIR__
+ExecStart=__PROJECT_DIR__/.venv/bin/smarthome daemon
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
