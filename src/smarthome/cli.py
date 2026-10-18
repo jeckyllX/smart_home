@@ -204,6 +204,40 @@ def cmd_set_mode(args):
         sys.exit(f"Failed to set mode '{args.mode}' on '{dev.name}'.")
 
 
+def cmd_turn_on(args: argparse.Namespace) -> None:
+    app = get_app(args.config)
+    dev = app.registry.get(args.device_id)
+    if not dev:
+        sys.exit(f"Device '{args.device_id}' not found.")
+
+    on_off = dev.get_trait(OnOffTrait)
+    if not on_off:
+        sys.exit(f"Device '{dev.name}' does not support power on/off.")
+
+    success = on_off.turn_on()
+    if success:
+        print(f"Turned ON '{dev.name}'.")
+    else:
+        sys.exit(f"Failed to turn ON '{dev.name}'.")
+
+
+def cmd_turn_off(args: argparse.Namespace) -> None:
+    app = get_app(args.config)
+    dev = app.registry.get(args.device_id)
+    if not dev:
+        sys.exit(f"Device '{args.device_id}' not found.")
+
+    on_off = dev.get_trait(OnOffTrait)
+    if not on_off:
+        sys.exit(f"Device '{dev.name}' does not support power on/off.")
+
+    success = on_off.turn_off()
+    if success:
+        print(f"Turned OFF '{dev.name}'.")
+    else:
+        sys.exit(f"Failed to turn OFF '{dev.name}'.")
+
+
 def cmd_evaluate(args):
     app = get_app(args.config)
     print("\n--- Running Automation Evaluation Cycle ---")
@@ -256,6 +290,61 @@ def main():
     parser.add_argument("--config", default="config.json", help="Path to configuration file")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # device / devices subcommand group
+    p_device = subparsers.add_parser(
+        "device", aliases=["devices"], help="Commands operating on devices"
+    )
+    dev_subparsers = p_device.add_subparsers(dest="device_command", required=True)
+
+    # device list
+    d_list = dev_subparsers.add_parser("list", help="List all registered devices across rooms")
+    d_list.set_defaults(func=cmd_list)
+
+    # device status
+    d_status = dev_subparsers.add_parser("status", help="Get detailed status of a device")
+    d_status.add_argument("device_id", help="Target device ID")
+    d_status.set_defaults(func=cmd_status)
+
+    # device turn-on
+    d_turn_on = dev_subparsers.add_parser("turn-on", help="Power ON a device")
+    d_turn_on.add_argument("device_id", help="Target device ID")
+    d_turn_on.set_defaults(func=cmd_turn_on)
+
+    # device turn-off
+    d_turn_off = dev_subparsers.add_parser("turn-off", help="Power OFF a device")
+    d_turn_off.add_argument("device_id", help="Target device ID")
+    d_turn_off.set_defaults(func=cmd_turn_off)
+
+    # device set-target
+    d_target = dev_subparsers.add_parser("set-target", help="Adjust target humidity")
+    d_target.add_argument("device_id", help="Target device ID")
+    d_target.add_argument("humidity", type=int, help="Desired relative humidity percentage")
+    d_target.set_defaults(func=cmd_set_target)
+
+    # device set-mode
+    d_mode = dev_subparsers.add_parser("set-mode", help="Switch operational mode")
+    d_mode.add_argument("device_id", help="Target device ID")
+    d_mode.add_argument("mode", help="Operational mode string")
+    d_mode.set_defaults(func=cmd_set_mode)
+
+    # device probe
+    d_probe = dev_subparsers.add_parser(
+        "probe", help="Print the raw data points and status flags of a device"
+    )
+    d_probe.add_argument("device_id", help="Target device ID")
+    d_probe.set_defaults(func=cmd_probe)
+
+    # device find
+    d_find = dev_subparsers.add_parser("find", help="Find devices supporting a trait")
+    d_find.add_argument(
+        "--trait",
+        required=True,
+        help="Trait name, e.g. HumidityControlTrait or humidity_control",
+    )
+    d_find.add_argument("--room", help="Restrict results to a room/zone")
+    d_find.set_defaults(func=cmd_find)
+
+    # top-level shortcuts
     # list
     p_list = subparsers.add_parser("list", help="List all registered devices across rooms")
     p_list.set_defaults(func=cmd_list)
@@ -286,6 +375,16 @@ def main():
     p_mode.add_argument("device_id", help="Target device ID")
     p_mode.add_argument("mode", help="Operational mode string")
     p_mode.set_defaults(func=cmd_set_mode)
+
+    # turn-on
+    p_turn_on = subparsers.add_parser("turn-on", help="Power ON a device")
+    p_turn_on.add_argument("device_id", help="Target device ID")
+    p_turn_on.set_defaults(func=cmd_turn_on)
+
+    # turn-off
+    p_turn_off = subparsers.add_parser("turn-off", help="Power OFF a device")
+    p_turn_off.add_argument("device_id", help="Target device ID")
+    p_turn_off.set_defaults(func=cmd_turn_off)
 
     # probe
     p_probe = subparsers.add_parser(

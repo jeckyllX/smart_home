@@ -121,38 +121,34 @@ dew point (`resolve_safe_dew_point`), the maximum safe indoor relative humidity
 
 The CLI is installed at `.venv/bin/smarthome`.
 
-### List devices
+### Device subcommands (`device` or `devices`)
+All device operations can be invoked under the `device` (or `devices`) subcommand, requiring the target `device_id` as parameter:
+
 ```bash
-.venv/bin/smarthome list
+# List all registered devices across rooms
+.venv/bin/smarthome device list
+
+# Read telemetry and active traits
+.venv/bin/smarthome device status <device_id>
+
+# Power ON or OFF
+.venv/bin/smarthome device turn-on <device_id>
+.venv/bin/smarthome device turn-off <device_id>
+
+# Set target humidity (snaps to device step)
+.venv/bin/smarthome device set-target <device_id> 50
+
+# Set operating mode
+.venv/bin/smarthome device set-mode <device_id> sleep
+
+# Inspect raw Tuya data points and status flags
+.venv/bin/smarthome device probe <device_id>
+
+# Find devices supporting a trait
+.venv/bin/smarthome device find --trait HumidityControlTrait
 ```
 
-### Find devices by trait
-```bash
-# Trait class name or snake_case identifier both work
-.venv/bin/smarthome find --trait HumidityControlTrait
-.venv/bin/smarthome find --trait humidity_control --room bedroom
-```
-
-### Read device telemetry
-```bash
-.venv/bin/smarthome status <device_id>
-.venv/bin/smarthome status weather_outdoor
-```
-
-### Print raw data points
-```bash
-# Raw Tuya data points and the decoded status flags, for a Tuya device
-.venv/bin/smarthome probe <device_id>
-```
-
-### Set target humidity or mode
-```bash
-# Works on any device that supports HumidityControlTrait
-.venv/bin/smarthome set-target <device_id> 50
-
-# Works on any device that supports ModeControlTrait
-.venv/bin/smarthome set-mode <device_id> sleep
-```
+Top-level shortcuts (`smarthome list`, `smarthome status <device_id>`, `smarthome turn-on <device_id>`, etc.) are also supported.
 
 ### Scan for BLE sensors
 ```bash

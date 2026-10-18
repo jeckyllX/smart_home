@@ -137,3 +137,43 @@ def test_cmd_scan_ble_no_devices(monkeypatch, capsys):
     out = capsys.readouterr().out
 
     assert "No ThermoPro BLE sensors discovered." in out
+
+
+def test_cmd_turn_on_and_off(monkeypatch, capsys):
+    _install_app(monkeypatch)
+    cli.cmd_turn_on(argparse.Namespace(config="config.json", device_id="dh_lr"))
+    out = capsys.readouterr().out
+    assert "Turned ON 'LR Dehumidifier'." in out
+
+    cli.cmd_turn_off(argparse.Namespace(config="config.json", device_id="dh_lr"))
+    out = capsys.readouterr().out
+    assert "Turned OFF 'LR Dehumidifier'." in out
+
+
+def test_cli_device_subcommands(monkeypatch, capsys):
+    _install_app(monkeypatch)
+
+    # device list
+    monkeypatch.setattr("sys.argv", ["smarthome", "device", "list"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "LR Dehumidifier" in out
+    assert "Bedroom Sensor" in out
+
+    # devices list (alias)
+    monkeypatch.setattr("sys.argv", ["smarthome", "devices", "list"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "LR Dehumidifier" in out
+
+    # device turn-on
+    monkeypatch.setattr("sys.argv", ["smarthome", "device", "turn-on", "dh_lr"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "Turned ON 'LR Dehumidifier'." in out
+
+    # device turn-off
+    monkeypatch.setattr("sys.argv", ["smarthome", "device", "turn-off", "dh_lr"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "Turned OFF 'LR Dehumidifier'." in out
