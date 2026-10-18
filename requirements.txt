@@ -1,3 +1,4 @@
 # Runtime dependencies.
 tinytuya>=1.20.0
 requests>=2.28.0
+bleak>=0.21.1

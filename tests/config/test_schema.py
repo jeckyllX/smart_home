@@ -120,3 +120,63 @@ def test_condensation_new_keys_default():
     cfg = SmartHomeConfig.from_dict(payload)
     assert cfg.condensation.target_dew_point_c is None
     assert cfg.condensation.rh_deadband == 5
+
+
+def test_smarthome_config_ble_devices_in_devices_list():
+    payload = {
+        "location": {"latitude": 0.0, "longitude": 0.0, "city": "Unknown"},
+        "devices": [
+            {
+                "type": "tuya",
+                "ip": "192.0.2.10",
+                "dev_id": "dev_1",
+                "local_key": "1234567890123456",
+                "room": "living_room",
+                "name": "Dehumidifier",
+            },
+            {
+                "type": "thermopro_ble",
+                "id": "tp_lr",
+                "mac": "A4:C1:38:12:34:56",
+                "room": "living_room",
+                "name": "Living Room Thermometer",
+                "model": "TP350",
+            },
+            {
+                "type": "ble",
+                "id": "tp_br",
+                "mac": "A4:C1:38:65:43:21",
+                "room": "bedroom",
+                "model": "TP357",
+            },
+        ],
+    }
+    cfg = SmartHomeConfig.from_dict(payload)
+    assert len(cfg.tuya_devices) == 1
+    assert len(cfg.ble_devices) == 2
+    assert cfg.ble_devices[0]["mac"] == "A4:C1:38:12:34:56"
+    assert cfg.ble_devices[0]["model"] == "TP350"
+    assert cfg.ble_devices[1]["room"] == "bedroom"
+
+
+def test_smarthome_config_top_level_ble_devices():
+    payload = {
+        "location": {"latitude": 0.0, "longitude": 0.0, "city": "Unknown"},
+        "device": {
+            "ip": "192.0.2.10",
+            "dev_id": "dev_1",
+            "local_key": "1234567890123456",
+        },
+        "ble_devices": [
+            {
+                "id": "tp_sensor",
+                "mac": "A4:C1:38:99:99:99",
+                "room": "kitchen",
+            }
+        ],
+    }
+    cfg = SmartHomeConfig.from_dict(payload)
+    assert len(cfg.tuya_devices) == 1
+    assert len(cfg.ble_devices) == 1
+    assert cfg.ble_devices[0]["id"] == "tp_sensor"
+    assert cfg.ble_devices[0]["room"] == "kitchen"

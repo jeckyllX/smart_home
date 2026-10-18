@@ -188,28 +188,38 @@ class CondensationPreventionAutomation(Automation):
     def _get_room_climate(
         self, registry: DeviceRegistry, room: str, fallback_dehumidifier: Device
     ) -> _RoomClimate:
-        temp = self.default_indoor_temp
-        temp_assumed = True
-        rh: float | None = None
-        rh_from_builtin = False
+        room_temps: list[float] = []
+        room_rhs: list[float] = []
 
-        # Prefer a dedicated climate sensor in the room over the dehumidifier's own.
+        # Prefer dedicated climate sensors in the room over the dehumidifier's own.
         for dev in registry.get_by_room(room):
             if dev.id == fallback_dehumidifier.id:
                 continue
             t_trait = dev.get_trait(TemperatureSensorTrait)
             h_trait = dev.get_trait(HumiditySensorTrait)
             if t_trait and t_trait.temperature_celsius is not None:
-                temp = t_trait.temperature_celsius
-                temp_assumed = False
+                room_temps.append(t_trait.temperature_celsius)
             if h_trait and h_trait.humidity_percent is not None:
-                rh = h_trait.humidity_percent
+                room_rhs.append(h_trait.humidity_percent)
 
-        # Fall back to the dehumidifier's built-in sensor.
-        if rh is None:
+        if room_temps:
+            temp = min(room_temps)
+            temp_assumed = False
+        else:
+            temp = self.default_indoor_temp
+            temp_assumed = True
+
+        if room_rhs:
+            rh = max(room_rhs)
+            rh_from_builtin = False
+        else:
+            # Fall back to the dehumidifier's built-in sensor.
             h_trait = fallback_dehumidifier.get_trait(HumiditySensorTrait)
             if h_trait and h_trait.humidity_percent is not None:
                 rh = h_trait.humidity_percent
                 rh_from_builtin = True
+            else:
+                rh = None
+                rh_from_builtin = False
 
         return _RoomClimate(temp, rh, temp_assumed, rh_from_builtin)

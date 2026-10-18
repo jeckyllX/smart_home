@@ -112,6 +112,16 @@ class StatusFlagsTrait(Protocol):
         ...
 
 
+@runtime_checkable
+class BatteryLevelTrait(Protocol):
+    """Capability to report remaining battery charge percentage."""
+
+    @property
+    def battery_percent(self) -> int | None:
+        """Returns battery level percentage (0 to 100), or None if unknown."""
+        ...
+
+
 ALL_TRAITS: tuple[type, ...] = (
     OnOffTrait,
     TemperatureSensorTrait,
@@ -120,6 +130,7 @@ ALL_TRAITS: tuple[type, ...] = (
     ModeControlTrait,
     TankLevelTrait,
     StatusFlagsTrait,
+    BatteryLevelTrait,
 )
 
 

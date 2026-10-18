@@ -252,3 +252,37 @@ def test_assumed_temp_and_builtin_sensor_are_logged():
 
     assert any("indoor temp assumed" in line for line in logs)
     assert any("built-in sensor" in line for line in logs)
+
+
+def test_multiple_sensors_in_room_picks_worst_case():
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    # Sensor 1: warmer, lower humidity
+    registry.register(
+        VirtualClimateSensor(
+            device_id="lr_sensor_1",
+            name="Living Room Sensor 1",
+            room="living_room",
+            initial_temp=22.0,
+            initial_rh=50.0,
+        )
+    )
+    # Sensor 2: cooler, higher humidity (worst-case for condensation)
+    registry.register(
+        VirtualClimateSensor(
+            device_id="lr_sensor_2",
+            name="Living Room Sensor 2",
+            room="living_room",
+            initial_temp=18.0,
+            initial_rh=68.0,
+        )
+    )
+    dehumidifier = _room_dehumidifier(target_rh=45)
+    registry.register(dehumidifier)
+
+    automation = _living_room_automation(target_dew_point_c=10.0)
+    logs = automation.evaluate(registry, event_bus)
+
+    # Room climate should aggregate to 18.0 C (min) and 68.0% (max)
+    assert any("In=18.0°C/68%RH" in line for line in logs)

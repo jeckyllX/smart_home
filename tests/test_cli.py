@@ -9,6 +9,7 @@ import pytest
 from smarthome import cli
 from smarthome.core.registry import DeviceRegistry
 from smarthome.core.traits import (
+    BatteryLevelTrait,
     HumidityControlTrait,
     OnOffTrait,
     resolve_trait,
@@ -29,9 +30,14 @@ def _registry() -> DeviceRegistry:
     registry.register(
         VirtualDehumidifier(device_id="dh_lr", name="LR Dehumidifier", room="living_room")
     )
-    registry.register(
-        VirtualClimateSensor(device_id="sens_br", name="Bedroom Sensor", room="bedroom")
-    )
+    sensor = VirtualClimateSensor(device_id="sens_br", name="Bedroom Sensor", room="bedroom")
+
+    # Register BatteryLevelTrait on the sensor to test battery display
+    class _BatteryImpl:
+        battery_percent = 85
+
+    sensor.register_trait(BatteryLevelTrait, _BatteryImpl())
+    registry.register(sensor)
     return registry
 
 
@@ -43,6 +49,8 @@ def test_resolve_trait_accepts_name_and_snake_case():
     assert resolve_trait("HumidityControlTrait") is HumidityControlTrait
     assert resolve_trait("humidity_control") is HumidityControlTrait
     assert resolve_trait("humidity_control_trait") is HumidityControlTrait
+    assert resolve_trait("BatteryLevelTrait") is BatteryLevelTrait
+    assert resolve_trait("battery_level") is BatteryLevelTrait
     assert resolve_trait("OnOff") is OnOffTrait
     assert resolve_trait("  on_off  ") is OnOffTrait
 
@@ -54,6 +62,7 @@ def test_resolve_trait_unknown_returns_none():
 def test_trait_names_lists_canonical_names():
     names = trait_names()
     assert "HumidityControlTrait" in names
+    assert "BatteryLevelTrait" in names
     assert all(name.endswith("Trait") for name in names)
 
 
@@ -79,3 +88,52 @@ def test_cmd_find_unknown_trait_exits(monkeypatch):
     _install_app(monkeypatch)
     with pytest.raises(SystemExit):
         cli.cmd_find(argparse.Namespace(config="config.json", trait="bogus", room=None))
+
+
+def test_cmd_status_displays_battery_level(monkeypatch, capsys):
+    _install_app(monkeypatch)
+    cli.cmd_status(argparse.Namespace(config="config.json", device_id="sens_br"))
+    out = capsys.readouterr().out
+
+    assert "Bedroom Sensor" in out
+    assert "Battery Level:      85 %" in out
+
+
+def test_cmd_scan_ble_discovered_devices(monkeypatch, capsys):
+    def mock_scan(timeout):
+        return [
+            {
+                "mac": "A4:C1:38:12:34:56",
+                "name": "TP350 (1234)",
+                "model": "TP350",
+                "rssi": -65,
+                "temperature_celsius": 21.4,
+                "humidity_percent": 55.0,
+                "battery_percent": 100,
+            }
+        ]
+
+    import smarthome.drivers.ble.thermopro as tp_module
+
+    monkeypatch.setattr(tp_module, "scan_for_thermopro_sensors", mock_scan)
+
+    cli.cmd_scan_ble(argparse.Namespace(timeout=5.0))
+    out = capsys.readouterr().out
+
+    assert "Discovered 1 ThermoPro sensor(s):" in out
+    assert "A4:C1:38:12:34:56" in out
+    assert "TP350 (1234)" in out
+    assert "21.4 °C" in out
+    assert "55 %" in out
+    assert "100 %" in out
+
+
+def test_cmd_scan_ble_no_devices(monkeypatch, capsys):
+    import smarthome.drivers.ble.thermopro as tp_module
+
+    monkeypatch.setattr(tp_module, "scan_for_thermopro_sensors", lambda timeout: [])
+
+    cli.cmd_scan_ble(argparse.Namespace(timeout=2.0))
+    out = capsys.readouterr().out
+
+    assert "No ThermoPro BLE sensors discovered." in out

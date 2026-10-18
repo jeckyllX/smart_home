@@ -15,6 +15,7 @@ from smarthome.automations.schedule import QuietScheduleAutomation
 from smarthome.config.schema import SmartHomeConfig
 from smarthome.core.events import EventBus
 from smarthome.core.registry import DeviceRegistry
+from smarthome.drivers.ble.thermopro import ThermoProDriver
 from smarthome.drivers.tuya.meaco_arete import TuyaDriver
 from smarthome.drivers.weather.open_meteo import OpenMeteoDriver
 
@@ -50,6 +51,11 @@ class SmartHomeApplication:
         if self.config.tuya_devices:
             tuya_driver = TuyaDriver(self.config.tuya_devices)
             tuya_driver.setup(self.registry, self.event_bus)
+
+        # ThermoPro BLE driver
+        if self.config.ble_devices:
+            ble_driver = ThermoProDriver(self.config.ble_devices)
+            ble_driver.setup(self.registry, self.event_bus)
 
     def _setup_automations(self) -> None:
         # Condensation Prevention

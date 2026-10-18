@@ -13,6 +13,7 @@ from pathlib import Path
 from smarthome.app import SmartHomeApplication
 from smarthome.config.schema import SmartHomeConfig
 from smarthome.core.traits import (
+    BatteryLevelTrait,
     HumidityControlTrait,
     HumiditySensorTrait,
     ModeControlTrait,
@@ -101,6 +102,10 @@ def cmd_status(args):
     h_sensor = dev.get_trait(HumiditySensorTrait)
     if h_sensor and h_sensor.humidity_percent is not None:
         print(f"  Relative Humidity:  {h_sensor.humidity_percent:.0f} %")
+
+    batt = dev.get_trait(BatteryLevelTrait)
+    if batt and batt.battery_percent is not None:
+        print(f"  Battery Level:      {batt.battery_percent} %")
 
     h_ctrl = dev.get_trait(HumidityControlTrait)
     if h_ctrl and h_ctrl.target_humidity_percent is not None:
@@ -213,6 +218,39 @@ def cmd_daemon(args):
     app.start()
 
 
+def cmd_scan_ble(args: argparse.Namespace) -> None:
+    from smarthome.drivers.ble.thermopro import scan_for_thermopro_sensors
+
+    timeout = float(args.timeout)
+    print(f"\nScanning for ThermoPro BLE sensors ({timeout:.1f}s timeout)...\n")
+    devices = scan_for_thermopro_sensors(timeout=timeout)
+    if not devices:
+        print("No ThermoPro BLE sensors discovered.")
+        print("Ensure Bluetooth is enabled and the sensor is powered and in range.\n")
+        return
+
+    print(f"Discovered {len(devices)} ThermoPro sensor(s):\n")
+    print(
+        f"{'MAC Address':<18} | {'Name':<20} | {'Model':<8} | {'RSSI':<8} | "
+        f"{'Temp':<8} | {'Humidity':<10} | {'Battery'}"
+    )
+    print("-" * 90)
+    for d in devices:
+        mac = d.get("mac", "UNKNOWN")
+        name = d.get("name", "Unknown")
+        model = d.get("model", "TP35x")
+        rssi_val = d.get("rssi")
+        rssi = f"{rssi_val} dBm" if rssi_val is not None else "N/A"
+        temp = f"{d.get('temperature_celsius', 0.0):.1f} °C"
+        humidity = f"{d.get('humidity_percent', 0.0):.0f} %"
+        batt = f"{d.get('battery_percent', 0)} %"
+        row = (
+            f"{mac:<18} | {name:<20} | {model:<8} | {rssi:<8} | {temp:<8} | {humidity:<10} | {batt}"
+        )
+        print(row)
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Smart Home Platform CLI")
     parser.add_argument("--config", default="config.json", help="Path to configuration file")
@@ -265,6 +303,18 @@ def main():
     # daemon
     p_daemon = subparsers.add_parser("daemon", help="Run the smart home automation daemon")
     p_daemon.set_defaults(func=cmd_daemon)
+
+    # scan-ble
+    p_scan = subparsers.add_parser(
+        "scan-ble", help="Scan for nearby ThermoPro BLE temperature and humidity sensors"
+    )
+    p_scan.add_argument(
+        "--timeout",
+        type=float,
+        default=12.0,
+        help="Scan timeout in seconds (default: 12.0)",
+    )
+    p_scan.set_defaults(func=cmd_scan_ble)
 
     args = parser.parse_args()
     args.func(args)

@@ -3,8 +3,8 @@
 Climate control for a Raspberry Pi. Each device exposes capabilities as
 runtime-checkable `typing.Protocol` traits (`OnOffTrait`, `HumidityControlTrait`,
 `HumiditySensorTrait`, `TemperatureSensorTrait`, `ModeControlTrait`,
-`TankLevelTrait`, `StatusFlagsTrait`). Automations select devices by trait and
-room.
+`TankLevelTrait`, `StatusFlagsTrait`, `BatteryLevelTrait`). Automations select
+devices by trait and room.
 
 ---
 
@@ -27,10 +27,9 @@ Copy the example and fill in your values:
 cp config.example.json config.json
 ```
 
-Required: `device.ip`, `device.dev_id`, `device.local_key`, and
-`location.latitude`/`longitude`. `location.city` is display-only. See
-`config.example.json` for the full shape, including the optional `device.room`
-and `quiet_schedule.rooms` keys.
+Configure your devices in `devices: [...]` (or the legacy single `device: {...}` format).
+See `config.example.json` for the full shape including Tuya dehumidifiers, ThermoPro BLE
+sensors, locations, and automations.
 
 ---
 
@@ -51,6 +50,7 @@ and `quiet_schedule.rooms` keys.
            ▼
       Device (abstract base)
       ├── MeacoAreteTuyaDevice   - Tuya LAN protocol 3.5
+      ├── ThermoProBleDevice     - Bleak BLE broadcast listener (TP350/TP357/TP358)
       └── OpenMeteoWeatherDevice - Open-Meteo HTTP API
 ```
 
@@ -83,6 +83,10 @@ Each driver targets one device model and maps its protocol to those traits.
   `L4`, `wet`). The `wet` flag tracks the built-in sensor reading above 70%; that
   sensor reads high and the flag is also set while the device is off, so it is
   informational.
+- `ble/thermopro.py` — `ThermoProDriver` coordinates `ThermoProScannerHub` and
+  registers `ThermoProBleDevice` instances (exposing `TemperatureSensorTrait`,
+  `HumiditySensorTrait`, and `BatteryLevelTrait`). Passively parses BLE manufacturer
+  advertisement broadcasts without pairing for TP350, TP357, TP358, and TP39x sensors.
 - `weather/open_meteo.py` — `OpenMeteoDriver` reads temperature and humidity from
   the Open-Meteo HTTP API (900 s cache) and registers `OpenMeteoWeatherDevice` in
   the `outdoor` room.
@@ -92,7 +96,9 @@ Each driver targets one device model and maps its protocol to those traits.
 ### `src/smarthome/automations/`
 - `CondensationPreventionAutomation` — for each room that has a dehumidifier,
   resolves a safe indoor dew point and sets the target humidity so the room stays
-  below it. In window mode it estimates the interior glass temperature from the
+  below it. When multiple climate sensors are in the same room, it aggregates to
+  the worst-case conditions (minimum room temperature and maximum humidity).
+  In window mode it estimates the interior glass temperature from the
   outdoor temperature and the glazing type; in fixed mode it uses the configured
   `target_dew_point_c` and needs no outdoor sensor. The target is clamped to the
   overlap of the configured bounds and the device range, snapped to the device
@@ -146,6 +152,13 @@ The CLI is installed at `.venv/bin/smarthome`.
 
 # Works on any device that supports ModeControlTrait
 .venv/bin/smarthome set-mode <device_id> sleep
+```
+
+### Scan for BLE sensors
+```bash
+# Scan for nearby ThermoPro TP35x/TP39x sensors and display MAC, signal, temp, RH, battery
+.venv/bin/smarthome scan-ble
+.venv/bin/smarthome scan-ble --timeout 15
 ```
 
 ### Run automations

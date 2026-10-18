@@ -45,6 +45,7 @@ class QuietScheduleAutomationConfig:
 class SmartHomeConfig:
     location: LocationConfig = field(default_factory=LocationConfig)
     tuya_devices: list[dict[str, Any]] = field(default_factory=list)
+    ble_devices: list[dict[str, Any]] = field(default_factory=list)
     condensation: CondensationAutomationConfig = field(default_factory=CondensationAutomationConfig)
     quiet_schedule: QuietScheduleAutomationConfig = field(
         default_factory=QuietScheduleAutomationConfig
@@ -61,18 +62,26 @@ class SmartHomeConfig:
             city=str(loc_data.get("city", "Unknown")),
         )
 
-        # Tuya Devices
+        # Devices (Tuya and BLE)
         tuya_devices = []
+        ble_devices = []
         if "device" in data:
             # Single device format compatibility
             dev = dict(data["device"])
             dev.setdefault("room", "living_room")
             dev.setdefault("name", "Meaco Arete Two")
             tuya_devices.append(dev)
-        elif "devices" in data:
+        if "devices" in data and isinstance(data["devices"], list):
             for d in data["devices"]:
-                if d.get("type", "tuya") == "tuya":
+                dev_type = d.get("type", "tuya")
+                if dev_type == "tuya":
                     tuya_devices.append(d)
+                elif dev_type in ("thermopro_ble", "ble"):
+                    ble_devices.append(d)
+
+        # Allow explicit top-level ble_devices list as well
+        if "ble_devices" in data and isinstance(data["ble_devices"], list):
+            ble_devices.extend(data["ble_devices"])
 
         # Condensation (canonical keys first, legacy aliases as fallback)
         cond_data = data.get("condensation", data.get("condensation_prevention", {}))
@@ -115,6 +124,7 @@ class SmartHomeConfig:
         return cls(
             location=location,
             tuya_devices=tuya_devices,
+            ble_devices=ble_devices,
             condensation=condensation,
             quiet_schedule=quiet_schedule,
             polling_interval_seconds=int(data.get("polling_interval_seconds", 60)),
