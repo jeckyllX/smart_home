@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import struct
 import threading
 import time
@@ -22,8 +23,9 @@ from smarthome.drivers.base import Driver
 
 logger = logging.getLogger("ThermoProDriver")
 
-# Known ThermoPro family prefixes for advertising local names
-THERMOPRO_NAME_PREFIXES = ("TP35", "TP39")
+# Regex matching any ThermoPro model (TP followed by digits, or ThermoPro brand name).
+# Excludes unrelated devices like TP-Link and filters out unnamed beacons.
+THERMOPRO_NAME_REGEX = re.compile(r"^(TP\d|ThermoPro)", re.IGNORECASE)
 
 # Map 2-bit battery state to percentage (verified on TP35x hardware)
 BATTERY_LEVEL_MAP: dict[int, int] = {
@@ -71,7 +73,7 @@ def decode_thermopro_advertisement(
 
     # Filter by advertised name if present
     name = (local_name or "").strip()
-    if name and not any(name.startswith(prefix) for prefix in THERMOPRO_NAME_PREFIXES):
+    if name and not THERMOPRO_NAME_REGEX.match(name):
         return None
 
     # Reconstruct combined manufacturer data (company ID little-endian + payload)
@@ -125,6 +127,8 @@ async def _bleak_scan_async(
 
     def detection_callback(device: BLEDevice, adv_data: AdvertisementData) -> None:
         mac = normalize_mac(device.address)
+        if target_macs and mac not in target_macs:
+            return
         reading = decode_thermopro_advertisement(
             adv_data.local_name or device.name,
             adv_data.manufacturer_data,
@@ -367,15 +371,19 @@ async def _scan_for_thermopro_async(timeout: float) -> list[dict[str, Any]]:
     discovered: dict[str, dict[str, Any]] = {}
 
     def callback(device: BLEDevice, adv_data: AdvertisementData) -> None:
+        local_name = adv_data.local_name or device.name
+        if not local_name or not THERMOPRO_NAME_REGEX.match(local_name.strip()):
+            return
+
         mac = normalize_mac(device.address)
         reading = decode_thermopro_advertisement(
-            adv_data.local_name or device.name,
+            local_name,
             adv_data.manufacturer_data,
         )
         if reading is not None:
             discovered[mac] = {
                 "mac": mac,
-                "name": adv_data.local_name or device.name or "ThermoPro",
+                "name": local_name,
                 "model": reading.model,
                 "rssi": adv_data.rssi,
                 "temperature_celsius": reading.temperature_celsius,

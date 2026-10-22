@@ -77,9 +77,22 @@ def test_decode_advertisement_medium_battery():
 
 def test_decode_advertisement_filters_unmatched_names():
     cid, payload = _make_adv_data(temp_c=20.0, humidity=50, battery_code=2)
-    # Name not starting with TP35 or TP39
-    reading = decode_thermopro_advertisement("RandomDevice", {cid: payload})
-    assert reading is None
+    # Name not starting with TP<digit> or ThermoPro
+    assert decode_thermopro_advertisement("RandomDevice", {cid: payload}) is None
+    # TP-Link devices must be rejected
+    assert decode_thermopro_advertisement("TP-Link_SmartPlug_1234", {cid: payload}) is None
+
+
+def test_decode_advertisement_future_models_accepted():
+    cid, payload = _make_adv_data(temp_c=22.0, humidity=40, battery_code=2)
+    # Future models like TP360 or TP400 should be accepted
+    reading_360 = decode_thermopro_advertisement("TP360 (A1B2)", {cid: payload})
+    assert reading_360 is not None
+    assert reading_360.model == "TP360"
+
+    reading_400 = decode_thermopro_advertisement("TP400 (C3D4)", {cid: payload})
+    assert reading_400 is not None
+    assert reading_400.model == "TP400"
 
 
 def test_decode_advertisement_allows_none_name():
