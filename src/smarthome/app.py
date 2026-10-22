@@ -70,6 +70,7 @@ class SmartHomeApplication:
                     safety_margin_c=c_cfg.safety_margin_c,
                     target_dew_point_c=c_cfg.target_dew_point_c,
                     rh_deadband=c_cfg.rh_deadband,
+                    lookahead_hours=c_cfg.lookahead_hours,
                 )
             )
 

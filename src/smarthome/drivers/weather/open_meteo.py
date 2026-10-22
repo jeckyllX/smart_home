@@ -13,13 +13,14 @@ import requests
 from smarthome.core.device import DeviceCategory
 from smarthome.core.events import EventBus, TelemetryEvent
 from smarthome.core.registry import DeviceRegistry
+from smarthome.core.traits import TemperatureForecastTrait
 from smarthome.devices.climate import ClimateSensorDevice
 from smarthome.drivers.base import Driver
 
 logger = logging.getLogger("OpenMeteoDriver")
 
 
-class OpenMeteoWeatherDevice(ClimateSensorDevice):
+class OpenMeteoWeatherDevice(ClimateSensorDevice, TemperatureForecastTrait):
     """
     Virtual outdoor weather station backed by Open-Meteo public API.
     """
@@ -49,10 +50,13 @@ class OpenMeteoWeatherDevice(ClimateSensorDevice):
         self.cache_ttl = cache_ttl_seconds
         self.event_bus = event_bus
 
+        self.register_trait(TemperatureForecastTrait, self)
+
         self._lock = threading.Lock()
         self._last_fetch = 0.0
         self._temp_c: float | None = None
         self._rh_pct: float | None = None
+        self._hourly_temps_c: tuple[float, ...] = ()
         self._is_online = False
 
     @property
@@ -67,6 +71,15 @@ class OpenMeteoWeatherDevice(ClimateSensorDevice):
     def humidity_percent(self) -> float | None:
         return self._rh_pct
 
+    @property
+    def hourly_temperature_forecast_celsius(self) -> tuple[float, ...]:
+        return self._hourly_temps_c
+
+    def min_forecast_temperature(self, hours: int) -> float | None:
+        if hours <= 0 or not self._hourly_temps_c:
+            return None
+        return min(self._hourly_temps_c[:hours])
+
     def refresh(self) -> bool:
         now = time.time()
         with self._lock:
@@ -78,17 +91,24 @@ class OpenMeteoWeatherDevice(ClimateSensorDevice):
                 "latitude": str(self.latitude),
                 "longitude": str(self.longitude),
                 "current": "temperature_2m,relative_humidity_2m",
+                "hourly": "temperature_2m",
+                "forecast_hours": "24",
             }
             resp = requests.get(self.ENDPOINT, params=params, timeout=5.0)
             resp.raise_for_status()
-            current = resp.json().get("current", {})
+            data = resp.json()
+            current = data.get("current", {})
+            hourly = data.get("hourly", {})
             temp = current.get("temperature_2m")
             rh = current.get("relative_humidity_2m")
+            raw_hourly = hourly.get("temperature_2m", [])
+            hourly_temps = tuple(float(t) for t in raw_hourly if t is not None)
 
             if temp is not None and rh is not None:
                 with self._lock:
                     self._temp_c = float(temp)
                     self._rh_pct = float(rh)
+                    self._hourly_temps_c = hourly_temps
                     self._last_fetch = now
                     self._is_online = True
 

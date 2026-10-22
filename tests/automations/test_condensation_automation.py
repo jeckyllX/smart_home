@@ -286,3 +286,132 @@ def test_multiple_sensors_in_room_picks_worst_case():
 
     # Room climate should aggregate to 18.0 C (min) and 68.0% (max)
     assert any("In=18.0°C/68%RH" in line for line in logs)
+
+
+def test_predictive_lookahead_uses_forecast_minimum():
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    # Outdoor sensor has current temp 12.0°C, but overnight forecast plunges to 0.0°C
+    outdoor = VirtualClimateSensor(
+        device_id="out_weather",
+        name="Outdoor Sensor",
+        room="outdoor",
+        initial_temp=12.0,
+        initial_rh=70.0,
+        initial_forecast_temps=(11.0, 10.0, 8.0, 6.0, 4.0, 2.0, 0.0, 1.0, 3.0),
+    )
+    registry.register(outdoor)
+
+    indoor = VirtualClimateSensor(
+        device_id="bed_sensor",
+        name="Bedroom Sensor",
+        room="bedroom",
+        initial_temp=20.0,
+        initial_rh=55.0,
+    )
+    registry.register(indoor)
+
+    dehumidifier = VirtualDehumidifier(
+        device_id="bed_dehumidifier",
+        name="Bedroom Dehumidifier",
+        room="bedroom",
+    )
+    dehumidifier.set_target_humidity(60)
+    registry.register(dehumidifier)
+
+    automation = CondensationPreventionAutomation(
+        lookahead_hours=12,
+        glazing=GlazingType.DOUBLE,
+        min_target_rh=40,
+        max_target_rh=60,
+    )
+    logs = automation.evaluate(registry, event_bus)
+
+    # Effective outdoor temp is 0.0°C instead of 12.0°C
+    # Double glazing at 20°C in, 0°C out gives glass temp = 20 - 0.3*(20) = 14.0°C
+    # Safe dew point = 14.0 - 1.5 = 12.5°C -> Safe RH is ~62.0% -> Target 60%
+    assert any("12hMin=0.0°C" in line for line in logs)
+    assert any("window Out=12.0°C" in line for line in logs)
+
+
+def test_predictive_lookahead_disabled_uses_current_only():
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    outdoor = VirtualClimateSensor(
+        device_id="out_weather",
+        name="Outdoor Sensor",
+        room="outdoor",
+        initial_temp=12.0,
+        initial_rh=70.0,
+        initial_forecast_temps=(0.0, 0.0, 0.0),
+    )
+    registry.register(outdoor)
+
+    indoor = VirtualClimateSensor(
+        device_id="bed_sensor",
+        name="Bedroom Sensor",
+        room="bedroom",
+        initial_temp=20.0,
+        initial_rh=55.0,
+    )
+    registry.register(indoor)
+
+    dehumidifier = VirtualDehumidifier(
+        device_id="bed_dehumidifier",
+        name="Bedroom Dehumidifier",
+        room="bedroom",
+    )
+    dehumidifier.set_target_humidity(60)
+    registry.register(dehumidifier)
+
+    # Disable lookahead (lookahead_hours=0)
+    automation = CondensationPreventionAutomation(
+        lookahead_hours=0,
+        glazing=GlazingType.DOUBLE,
+    )
+    logs = automation.evaluate(registry, event_bus)
+
+    # Should use current 12.0°C and NOT mention forecast minimum
+    assert any("window Out=12.0°C" in line for line in logs)
+    assert not any("hMin=" in line for line in logs)
+
+
+def test_predictive_lookahead_warmer_forecast_keeps_current():
+    registry = DeviceRegistry()
+
+    # Current temp is already cold (2.0°C), forecast warms up (5.0°C, 8.0°C)
+    outdoor = VirtualClimateSensor(
+        device_id="out_weather",
+        name="Outdoor Sensor",
+        room="outdoor",
+        initial_temp=2.0,
+        initial_rh=70.0,
+        initial_forecast_temps=(5.0, 8.0, 10.0),
+    )
+    registry.register(outdoor)
+
+    indoor = VirtualClimateSensor(
+        device_id="bed_sensor",
+        name="Bedroom Sensor",
+        room="bedroom",
+        initial_temp=20.0,
+        initial_rh=55.0,
+    )
+    registry.register(indoor)
+
+    dehumidifier = VirtualDehumidifier(
+        device_id="bed_dehumidifier",
+        name="Bedroom Dehumidifier",
+        room="bedroom",
+    )
+    registry.register(dehumidifier)
+
+    automation = CondensationPreventionAutomation(lookahead_hours=12)
+    effective_temp, current_temp, forecast_min = automation._resolve_outdoor_temperature(registry)
+
+    # Effective temp is min(2.0, 5.0) = 2.0
+    assert current_temp == 2.0
+    assert forecast_min == 5.0
+    assert effective_temp == 2.0

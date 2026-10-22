@@ -4,11 +4,14 @@ Virtual and simulation devices for testing multi-device topologies.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
+from smarthome.core.traits import TemperatureForecastTrait
 from smarthome.devices.climate import ClimateSensorDevice, DehumidifierDevice
 from smarthome.physics.psychrometrics import quantize_rh
 
 
-class VirtualClimateSensor(ClimateSensorDevice):
+class VirtualClimateSensor(ClimateSensorDevice, TemperatureForecastTrait):
     """
     Simulated climate sensor with manually adjustable temperature and humidity.
     """
@@ -20,6 +23,7 @@ class VirtualClimateSensor(ClimateSensorDevice):
         room: str = "living_room",
         initial_temp: float = 20.0,
         initial_rh: float = 55.0,
+        initial_forecast_temps: Sequence[float] = (),
     ):
         super().__init__(
             device_id=device_id,
@@ -28,8 +32,10 @@ class VirtualClimateSensor(ClimateSensorDevice):
             manufacturer="Virtual",
             model="SimulatedSensor",
         )
+        self.register_trait(TemperatureForecastTrait, self)
         self._temp = initial_temp
         self._rh = initial_rh
+        self._forecast_temps = tuple(float(t) for t in initial_forecast_temps)
         self._online = True
 
     @property
@@ -46,6 +52,19 @@ class VirtualClimateSensor(ClimateSensorDevice):
     @property
     def humidity_percent(self) -> float | None:
         return self._rh
+
+    @property
+    def hourly_temperature_forecast_celsius(self) -> tuple[float, ...]:
+        return self._forecast_temps
+
+    def min_forecast_temperature(self, hours: int) -> float | None:
+        if hours <= 0 or not self._forecast_temps:
+            return None
+        return min(self._forecast_temps[:hours])
+
+    def set_forecast(self, temps: Sequence[float]) -> None:
+        """Helper to simulate forecast changes."""
+        self._forecast_temps = tuple(float(t) for t in temps)
 
     def set_environment(self, temp_c: float, rh_pct: float) -> None:
         """Helper to simulate environmental changes."""

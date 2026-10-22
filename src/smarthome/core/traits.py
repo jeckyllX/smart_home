@@ -122,6 +122,27 @@ class BatteryLevelTrait(Protocol):
         ...
 
 
+@runtime_checkable
+class TemperatureForecastTrait(Protocol):
+    """Capability to provide hourly future temperature forecasts."""
+
+    @property
+    def hourly_temperature_forecast_celsius(self) -> tuple[float, ...]:
+        """
+        Returns upcoming hourly temperatures in degrees Celsius, ordered
+        starting from the current hour forward (index 0 = current hour,
+        index 1 = +1h, ...), or an empty tuple if unavailable.
+        """
+        ...
+
+    def min_forecast_temperature(self, hours: int) -> float | None:
+        """
+        Returns the minimum forecasted temperature in degrees Celsius over
+        the next ``hours`` hours, or None if unavailable.
+        """
+        ...
+
+
 ALL_TRAITS: tuple[type, ...] = (
     OnOffTrait,
     TemperatureSensorTrait,
@@ -131,6 +152,7 @@ ALL_TRAITS: tuple[type, ...] = (
     TankLevelTrait,
     StatusFlagsTrait,
     BatteryLevelTrait,
+    TemperatureForecastTrait,
 )
 
 

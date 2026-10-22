@@ -108,11 +108,13 @@ def test_condensation_new_keys_parsed():
             "enabled": True,
             "target_dew_point_c": 12.5,
             "rh_deadband": 3,
+            "lookahead_hours": 8,
         },
     }
     cfg = SmartHomeConfig.from_dict(payload)
     assert cfg.condensation.target_dew_point_c == 12.5
     assert cfg.condensation.rh_deadband == 3
+    assert cfg.condensation.lookahead_hours == 8
 
 
 def test_condensation_new_keys_default():
@@ -120,6 +122,7 @@ def test_condensation_new_keys_default():
     cfg = SmartHomeConfig.from_dict(payload)
     assert cfg.condensation.target_dew_point_c is None
     assert cfg.condensation.rh_deadband == 5
+    assert cfg.condensation.lookahead_hours == 12
 
 
 def test_smarthome_config_ble_devices_in_devices_list():

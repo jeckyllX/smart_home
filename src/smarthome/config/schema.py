@@ -29,6 +29,7 @@ class CondensationAutomationConfig:
     safety_margin_c: float = 1.5
     target_dew_point_c: float | None = None
     rh_deadband: int = 5
+    lookahead_hours: int = 12
 
 
 @dataclass
@@ -108,6 +109,7 @@ class SmartHomeConfig:
                 float(target_dew_point_raw) if target_dew_point_raw is not None else None
             ),
             rh_deadband=int(cond_data.get("rh_deadband", 5)),
+            lookahead_hours=max(0, int(cond_data.get("lookahead_hours", 12))),
         )
 
         # Quiet Schedule (canonical key first, legacy alias as fallback)

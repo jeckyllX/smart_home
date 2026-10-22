@@ -18,6 +18,7 @@ from smarthome.core.traits import (
     HumidityControlTrait,
     HumiditySensorTrait,
     TankLevelTrait,
+    TemperatureForecastTrait,
     TemperatureSensorTrait,
 )
 from smarthome.physics.psychrometrics import (
@@ -61,6 +62,7 @@ class CondensationPreventionAutomation(Automation):
         safety_margin_c: float = 1.5,
         target_dew_point_c: float | None = None,
         rh_deadband: int = 5,
+        lookahead_hours: int = 12,
     ):
         super().__init__(name=name, enabled=enabled)
         self.outdoor_room = outdoor_room
@@ -71,6 +73,7 @@ class CondensationPreventionAutomation(Automation):
         self.safety_margin_c = safety_margin_c
         self.target_dew_point_c = target_dew_point_c
         self.rh_deadband = rh_deadband
+        self.lookahead_hours = lookahead_hours
 
     def evaluate(self, registry: DeviceRegistry, event_bus: EventBus) -> list[str]:
         if not self.enabled:
@@ -80,14 +83,31 @@ class CondensationPreventionAutomation(Automation):
 
         # 1. Outdoor temperature is only needed in window mode.
         outdoor_temp: float | None = None
+        source_desc: str = ""
         if self.target_dew_point_c is None:
-            outdoor_temp = self._get_outdoor_temperature(registry)
-            if outdoor_temp is None:
+            effective_outdoor, current_outdoor, forecast_min = self._resolve_outdoor_temperature(
+                registry
+            )
+            if effective_outdoor is None:
                 logs.append(
                     "No outdoor temperature sensor available. Set 'target_dew_point_c' "
                     "or add an outdoor sensor. Condensation check skipped."
                 )
                 return logs
+            outdoor_temp = effective_outdoor
+            if (
+                current_outdoor is not None
+                and forecast_min is not None
+                and self.lookahead_hours > 0
+            ):
+                source_desc = (
+                    f"window Out={current_outdoor:.1f}°C, "
+                    f"{self.lookahead_hours}hMin={forecast_min:.1f}°C"
+                )
+            elif current_outdoor is not None:
+                source_desc = f"window Out={current_outdoor:.1f}°C"
+            else:
+                source_desc = f"window Out={outdoor_temp:.1f}°C"
 
         # 2. Iterate across all rooms that contain a dehumidifier.
         dehumidifiers = registry.find_devices_with_trait(HumidityControlTrait)
@@ -120,7 +140,7 @@ class CondensationPreventionAutomation(Automation):
                 safe_dew_point = resolve_safe_dew_point(
                     indoor_temp, outdoor_temp, self.glazing, self.safety_margin_c
                 )
-                source = f"window Out={outdoor_temp:.1f}°C"
+                source = source_desc
 
             # 4. Convert to a humidity target, clamp to the overlap of the configured
             #    bounds and the device range, then snap to the device step.
@@ -177,13 +197,42 @@ class CondensationPreventionAutomation(Automation):
 
         return logs
 
-    def _get_outdoor_temperature(self, registry: DeviceRegistry) -> float | None:
+    def _resolve_outdoor_temperature(
+        self, registry: DeviceRegistry
+    ) -> tuple[float | None, float | None, float | None]:
+        """
+        Resolve outdoor conditions: (effective_temp, current_temp, forecast_min).
+        If lookahead_hours > 0 and a forecast is available, effective_temp is
+        the lower of current_temp and forecast_min.
+        """
         outdoor_devices = registry.get_by_room(self.outdoor_room)
+        current_temp: float | None = None
+        forecast_min: float | None = None
+
         for dev in outdoor_devices:
-            sensor = dev.get_trait(TemperatureSensorTrait)
-            if sensor and sensor.temperature_celsius is not None:
-                return sensor.temperature_celsius
-        return None
+            if current_temp is None:
+                sensor = dev.get_trait(TemperatureSensorTrait)
+                if sensor and sensor.temperature_celsius is not None:
+                    current_temp = sensor.temperature_celsius
+
+            if self.lookahead_hours > 0 and forecast_min is None:
+                forecaster = dev.get_trait(TemperatureForecastTrait)
+                if forecaster:
+                    forecast_min = forecaster.min_forecast_temperature(self.lookahead_hours)
+
+        effective_temp: float | None
+        if current_temp is not None and forecast_min is not None:
+            effective_temp = min(current_temp, forecast_min)
+        elif current_temp is not None:
+            effective_temp = current_temp
+        else:
+            effective_temp = forecast_min
+
+        return effective_temp, current_temp, forecast_min
+
+    def _get_outdoor_temperature(self, registry: DeviceRegistry) -> float | None:
+        effective, _, _ = self._resolve_outdoor_temperature(registry)
+        return effective
 
     def _get_room_climate(
         self, registry: DeviceRegistry, room: str, fallback_dehumidifier: Device

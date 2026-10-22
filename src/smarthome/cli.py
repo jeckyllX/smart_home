@@ -20,6 +20,7 @@ from smarthome.core.traits import (
     OnOffTrait,
     StatusFlagsTrait,
     TankLevelTrait,
+    TemperatureForecastTrait,
     TemperatureSensorTrait,
     resolve_trait,
     trait_names,
@@ -98,6 +99,12 @@ def cmd_status(args):
     t_sensor = dev.get_trait(TemperatureSensorTrait)
     if t_sensor and t_sensor.temperature_celsius is not None:
         print(f"  Temperature:        {t_sensor.temperature_celsius:.1f} °C")
+
+    t_forecast = dev.get_trait(TemperatureForecastTrait)
+    if t_forecast:
+        min_12h = t_forecast.min_forecast_temperature(12)
+        if min_12h is not None:
+            print(f"  12h Forecast Min:   {min_12h:.1f} °C")
 
     h_sensor = dev.get_trait(HumiditySensorTrait)
     if h_sensor and h_sensor.humidity_percent is not None:
