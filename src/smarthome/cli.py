@@ -256,7 +256,10 @@ def cmd_evaluate(args):
 
 def cmd_daemon(args):
     app = get_app(args.config)
-    app.start()
+    run_web = not getattr(args, "no_web", False)
+    host = getattr(args, "host", None)
+    port = getattr(args, "port", None)
+    app.start(run_web=run_web, host=host, port=port)
 
 
 def cmd_scan_ble(args: argparse.Namespace) -> None:
@@ -408,7 +411,22 @@ def main():
 
     # daemon
     p_daemon = subparsers.add_parser("daemon", help="Run the smart home automation daemon")
+    p_daemon.add_argument("--host", help="Web server bind host (default: from config or 0.0.0.0)")
+    p_daemon.add_argument(
+        "--port", type=int, help="Web server bind port (default: from config or 8765)"
+    )
+    p_daemon.add_argument(
+        "--no-web", action="store_true", help="Disable the embedded web interface"
+    )
     p_daemon.set_defaults(func=cmd_daemon)
+
+    # web
+    p_web = subparsers.add_parser("web", help="Start daemon service with web interface")
+    p_web.add_argument("--host", help="Web server bind host (default: from config or 0.0.0.0)")
+    p_web.add_argument(
+        "--port", type=int, help="Web server bind port (default: from config or 8765)"
+    )
+    p_web.set_defaults(func=cmd_daemon, no_web=False)
 
     # scan-ble
     p_scan = subparsers.add_parser(

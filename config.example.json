@@ -40,14 +40,35 @@
         "safety_margin_c": 1.5,
         "target_dew_point_c": null,
         "rh_deadband": 5,
-        "lookahead_hours": 12
+        "lookahead_hours": 12,
+        "auto_power": true,
+        "turn_on_offset_rh": 2.0,
+        "turn_off_offset_rh": 2.0,
+        "min_cycle_seconds": 600
     },
     "quiet_schedule": {
         "enabled": true,
         "start_time": "23:00",
         "end_time": "07:00",
         "night_mode": "sleep",
-        "day_mode": "manual"
+        "day_mode": "manual",
+        "night_days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+        "all_day_sleep_days": [],
+        "exclusion_windows": [
+            {
+                "label": "Night Silence",
+                "start_time": "00:00",
+                "end_time": "07:00",
+                "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                "rooms": ["bedroom"],
+                "enabled": false
+            }
+        ]
+    },
+    "web": {
+        "enabled": true,
+        "host": "0.0.0.0",
+        "port": 8765
     },
     "polling_interval_seconds": 60
 }

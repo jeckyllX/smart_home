@@ -2,13 +2,16 @@
 Multi-room condensation prevention automation.
 Reads indoor and outdoor conditions and adjusts dehumidifier target humidity so
 the indoor dew point stays below the window glass temperature, or below a fixed
-target dew point.
+target dew point. Also supports sensor-driven automatic power control (with hysteresis
+and compressor protection cooldown) and exclusion window coordination.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import NamedTuple
+import time
+from datetime import datetime
+from typing import Any, Callable, NamedTuple
 
 from smarthome.automations.base import Automation
 from smarthome.core.device import Device
@@ -17,6 +20,7 @@ from smarthome.core.registry import DeviceRegistry
 from smarthome.core.traits import (
     HumidityControlTrait,
     HumiditySensorTrait,
+    OnOffTrait,
     TankLevelTrait,
     TemperatureForecastTrait,
     TemperatureSensorTrait,
@@ -44,10 +48,9 @@ class CondensationPreventionAutomation(Automation):
     Room-aware condensation prevention policy.
 
     For each room with a dehumidifier, resolves a safe indoor dew point and sets
-    the dehumidifier target humidity so the indoor air stays below it. The safe
-    dew point is either the configured ``target_dew_point_c`` (fixed mode) or the
-    estimated interior glass temperature minus ``safety_margin_c`` (window mode,
-    which needs an outdoor temperature).
+    the dehumidifier target humidity so the indoor air stays below it. Can also
+    drive dehumidifier power (turn ON/OFF) using the room's external climate sensor,
+    hysteresis offsets, and minimum compressor cycle protection.
     """
 
     def __init__(
@@ -63,6 +66,11 @@ class CondensationPreventionAutomation(Automation):
         target_dew_point_c: float | None = None,
         rh_deadband: int = 5,
         lookahead_hours: int = 12,
+        auto_power: bool = True,
+        turn_on_offset_rh: float = 2.0,
+        turn_off_offset_rh: float = 2.0,
+        min_cycle_seconds: int = 600,
+        exclusion_checker: Callable[[str, datetime | None], tuple[bool, Any]] | None = None,
     ):
         super().__init__(name=name, enabled=enabled)
         self.outdoor_room = outdoor_room
@@ -74,8 +82,99 @@ class CondensationPreventionAutomation(Automation):
         self.target_dew_point_c = target_dew_point_c
         self.rh_deadband = rh_deadband
         self.lookahead_hours = lookahead_hours
+        self.auto_power = auto_power
+        self.turn_on_offset_rh = turn_on_offset_rh
+        self.turn_off_offset_rh = turn_off_offset_rh
+        self.min_cycle_seconds = min_cycle_seconds
+        self.exclusion_checker = exclusion_checker
+        self._last_power_change: dict[str, float] = {}
 
-    def evaluate(self, registry: DeviceRegistry, event_bus: EventBus) -> list[str]:
+    def compute_room_status(
+        self,
+        registry: DeviceRegistry,
+        room: str,
+        dehum_dev: Device,
+        current_dt: datetime | None = None,
+    ) -> dict[str, Any]:
+        """
+        Inspect live psychrometrics and setpoint calculation for a room
+        without modifying hardware or device state.
+        """
+        climate = self._get_room_climate(registry, room, dehum_dev)
+        indoor_temp = climate.temp_c
+        indoor_rh = climate.rh
+
+        effective_outdoor, current_outdoor, forecast_min = self._resolve_outdoor_temperature(
+            registry
+        )
+
+        dew_point = calculate_dew_point(indoor_temp, indoor_rh) if indoor_rh is not None else None
+
+        safe_dew_point: float | None = None
+        raw_safe_rh: float | None = None
+        safe_target_rh: int | None = None
+
+        if self.target_dew_point_c is not None:
+            safe_dew_point = self.target_dew_point_c
+        elif effective_outdoor is not None:
+            safe_dew_point = resolve_safe_dew_point(
+                indoor_temp, effective_outdoor, self.glazing, self.safety_margin_c
+            )
+
+        if safe_dew_point is not None:
+            raw_safe_rh = calculate_rh_for_dew_point(indoor_temp, safe_dew_point)
+            control_trait = dehum_dev.get_trait(HumidityControlTrait)
+            dev_min, dev_max = (
+                control_trait.humidity_range
+                if control_trait
+                else (self.min_target_rh, self.max_target_rh)
+            )
+            step = control_trait.humidity_step if control_trait else 5
+            low = max(self.min_target_rh, dev_min)
+            high = min(self.max_target_rh, dev_max)
+            if low <= high:
+                safe_target_rh = quantize_rh(raw_safe_rh, step, low, high)
+
+        is_excluded = False
+        exclusion_label = None
+        if self.exclusion_checker:
+            is_excluded, ex_obj = self.exclusion_checker(room, current_dt)
+            if is_excluded and ex_obj:
+                exclusion_label = getattr(ex_obj, "label", "Exclusion")
+
+        now_ts = current_dt.timestamp() if current_dt else time.time()
+        last_change = self._last_power_change.get(dehum_dev.id, 0.0)
+        cooldown_left = max(0.0, self.min_cycle_seconds - (now_ts - last_change))
+
+        target_base = safe_target_rh or 55
+        turn_on_rh = target_base + self.turn_on_offset_rh
+        turn_off_rh = target_base - self.turn_off_offset_rh
+
+        return {
+            "indoor_temp_c": indoor_temp,
+            "indoor_rh_percent": indoor_rh,
+            "temp_assumed": climate.temp_assumed,
+            "rh_from_builtin": climate.rh_from_builtin,
+            "outdoor_temp_c": current_outdoor,
+            "outdoor_forecast_min_c": forecast_min,
+            "effective_outdoor_c": effective_outdoor,
+            "dew_point_c": dew_point,
+            "safe_dew_point_c": safe_dew_point,
+            "raw_safe_rh_percent": raw_safe_rh,
+            "safe_target_rh": safe_target_rh,
+            "turn_on_threshold_rh": turn_on_rh,
+            "turn_off_threshold_rh": turn_off_rh,
+            "is_excluded": is_excluded,
+            "exclusion_label": exclusion_label,
+            "cooldown_remaining_seconds": cooldown_left,
+        }
+
+    def evaluate(
+        self,
+        registry: DeviceRegistry,
+        event_bus: EventBus,
+        current_dt: datetime | None = None,
+    ) -> list[str]:
         if not self.enabled:
             return ["Condensation automation is disabled."]
 
@@ -115,9 +214,19 @@ class CondensationPreventionAutomation(Automation):
             logs.append("No dehumidifier devices registered.")
             return logs
 
+        now_ts = current_dt.timestamp() if current_dt else time.time()
+
         for dehum_dev in dehumidifiers:
             room = dehum_dev.room
             control_trait = dehum_dev.require_trait(HumidityControlTrait)
+
+            # Check exclusion window first
+            is_excluded = False
+            ex_label = ""
+            if self.exclusion_checker:
+                is_excluded, ex_obj = self.exclusion_checker(room, current_dt)
+                if is_excluded:
+                    ex_label = getattr(ex_obj, "label", "Exclusion")
 
             tank_trait = dehum_dev.get_trait(TankLevelTrait)
             if tank_trait and tank_trait.is_tank_full:
@@ -142,8 +251,7 @@ class CondensationPreventionAutomation(Automation):
                 )
                 source = source_desc
 
-            # 4. Convert to a humidity target, clamp to the overlap of the configured
-            #    bounds and the device range, then snap to the device step.
+            # 4. Convert to a humidity target, clamp to bounds, snap to step
             raw_safe_rh = calculate_rh_for_dew_point(indoor_temp, safe_dew_point)
             dev_min, dev_max = control_trait.humidity_range
             step = control_trait.humidity_step
@@ -174,8 +282,12 @@ class CondensationPreventionAutomation(Automation):
             if climate.rh_from_builtin:
                 log_entry += " [humidity from built-in sensor, reads high]"
 
-            # 5. Write only when the move exceeds the deadband, so a value near a step
-            #    boundary does not flip back and forth between two targets.
+            if is_excluded:
+                log_entry += f" [EXCLUDED: '{ex_label}' - power blocked]"
+                logs.append(log_entry)
+                continue
+
+            # 5. Target setpoint adjustment (with deadband)
             within_deadband = (
                 current_target is not None and abs(raw_safe_rh - current_target) < self.rh_deadband
             )
@@ -190,6 +302,44 @@ class CondensationPreventionAutomation(Automation):
             else:
                 log_entry += " [no change]"
 
+            # 6. Sensor-driven Auto Power Control
+            on_off = dehum_dev.get_trait(OnOffTrait)
+            if self.auto_power and on_off:
+                turn_on_threshold = safe_target_rh + self.turn_on_offset_rh
+                turn_off_threshold = safe_target_rh - self.turn_off_offset_rh
+
+                last_change = self._last_power_change.get(dehum_dev.id, 0.0)
+                elapsed = now_ts - last_change
+                cooldown_ready = elapsed >= self.min_cycle_seconds
+
+                if not on_off.is_on and indoor_rh >= turn_on_threshold:
+                    if cooldown_ready:
+                        if on_off.turn_on():
+                            self._last_power_change[dehum_dev.id] = now_ts
+                            log_entry += (
+                                f" [ACTION: Auto Turned ON (RH {indoor_rh:.0f}% >= "
+                                f"{turn_on_threshold:.1f}%)]"
+                            )
+                        else:
+                            log_entry += f" [ERROR: Failed to turn ON {dehum_dev.name}]"
+                    else:
+                        cooldown_rem = int(self.min_cycle_seconds - elapsed)
+                        log_entry += f" [turn-on pending: cooldown {cooldown_rem}s]"
+
+                elif on_off.is_on and indoor_rh <= turn_off_threshold:
+                    if cooldown_ready:
+                        if on_off.turn_off():
+                            self._last_power_change[dehum_dev.id] = now_ts
+                            log_entry += (
+                                f" [ACTION: Auto Turned OFF (RH {indoor_rh:.0f}% <= "
+                                f"{turn_off_threshold:.1f}%)]"
+                            )
+                        else:
+                            log_entry += f" [ERROR: Failed to turn OFF {dehum_dev.name}]"
+                    else:
+                        cooldown_rem = int(self.min_cycle_seconds - elapsed)
+                        log_entry += f" [turn-off pending: cooldown {cooldown_rem}s]"
+
             if indoor_rh > raw_safe_rh:
                 log_entry += " [CONDENSATION RISK ACTIVE]"
 
@@ -200,11 +350,6 @@ class CondensationPreventionAutomation(Automation):
     def _resolve_outdoor_temperature(
         self, registry: DeviceRegistry
     ) -> tuple[float | None, float | None, float | None]:
-        """
-        Resolve outdoor conditions: (effective_temp, current_temp, forecast_min).
-        If lookahead_hours > 0 and a forecast is available, effective_temp is
-        the lower of current_temp and forecast_min.
-        """
         outdoor_devices = registry.get_by_room(self.outdoor_room)
         current_temp: float | None = None
         forecast_min: float | None = None

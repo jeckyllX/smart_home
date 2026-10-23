@@ -183,3 +183,105 @@ def test_smarthome_config_top_level_ble_devices():
     assert len(cfg.ble_devices) == 1
     assert cfg.ble_devices[0]["id"] == "tp_sensor"
     assert cfg.ble_devices[0]["room"] == "kitchen"
+
+
+def test_config_web_and_auto_power_and_exclusion_keys():
+    payload = {
+        "location": {"latitude": 0.0, "longitude": 0.0, "city": "Test City"},
+        "devices": [
+            {
+                "type": "tuya",
+                "ip": "192.168.1.10",
+                "dev_id": "dev_1",
+                "local_key": "1234567890123456",
+                "room": "bedroom",
+            }
+        ],
+        "condensation": {
+            "enabled": True,
+            "auto_power": True,
+            "turn_on_offset_rh": 3.0,
+            "turn_off_offset_rh": 1.5,
+            "min_cycle_seconds": 300,
+        },
+        "quiet_schedule": {
+            "enabled": True,
+            "night_days": ["mon", "tue", "wed"],
+            "all_day_sleep_days": ["sun"],
+            "exclusion_windows": [
+                {
+                    "label": "Night Silence",
+                    "start_time": "01:00",
+                    "end_time": "06:00",
+                    "days": ["sat", "sun"],
+                    "rooms": ["bedroom"],
+                    "enabled": True,
+                }
+            ],
+        },
+        "web": {
+            "enabled": True,
+            "host": "127.0.0.1",
+            "port": 9000,
+        },
+    }
+    cfg = SmartHomeConfig.from_dict(payload)
+    assert cfg.condensation.auto_power is True
+    assert cfg.condensation.turn_on_offset_rh == 3.0
+    assert cfg.condensation.turn_off_offset_rh == 1.5
+    assert cfg.condensation.min_cycle_seconds == 300
+
+    assert cfg.quiet_schedule.night_days == ["mon", "tue", "wed"]
+    assert cfg.quiet_schedule.all_day_sleep_days == ["sun"]
+    assert len(cfg.quiet_schedule.exclusion_windows) == 1
+    assert cfg.quiet_schedule.exclusion_windows[0].label == "Night Silence"
+    assert cfg.quiet_schedule.exclusion_windows[0].rooms == ["bedroom"]
+
+    assert cfg.web.enabled is True
+    assert cfg.web.host == "127.0.0.1"
+    assert cfg.web.port == 9000
+
+
+def test_config_roundtrip_save_and_load(tmp_path):
+    config_file = tmp_path / "config.json"
+    payload = {
+        "location": {"latitude": 0.0, "longitude": 0.0, "city": "Test City"},
+        "devices": [
+            {
+                "type": "tuya",
+                "ip": "192.168.1.10",
+                "dev_id": "dev_1",
+                "local_key": "1234567890123456",
+                "room": "bedroom",
+            }
+        ],
+        "condensation": {
+            "enabled": True,
+            "auto_power": True,
+            "turn_on_offset_rh": 2.5,
+        },
+        "quiet_schedule": {
+            "enabled": True,
+            "all_day_sleep_days": ["sat", "sun"],
+            "exclusion_windows": [
+                {
+                    "label": "Deep Sleep",
+                    "start_time": "00:00",
+                    "end_time": "07:00",
+                    "days": ["mon"],
+                    "rooms": ["bedroom"],
+                    "enabled": True,
+                }
+            ],
+        },
+        "web": {"enabled": True, "port": 8888},
+    }
+    cfg = SmartHomeConfig.from_dict(payload)
+    cfg.save(config_file)
+
+    loaded = SmartHomeConfig.from_file(config_file)
+    assert loaded.condensation.auto_power is True
+    assert loaded.condensation.turn_on_offset_rh == 2.5
+    assert loaded.quiet_schedule.all_day_sleep_days == ["sat", "sun"]
+    assert loaded.quiet_schedule.exclusion_windows[0].label == "Deep Sleep"
+    assert loaded.web.port == 8888

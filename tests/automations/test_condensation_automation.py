@@ -415,3 +415,174 @@ def test_predictive_lookahead_warmer_forecast_keeps_current():
     assert current_temp == 2.0
     assert forecast_min == 5.0
     assert effective_temp == 2.0
+
+
+def test_auto_power_turns_on_when_rh_above_threshold():
+    from datetime import datetime
+
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    # Room sensor: 20°C, 65% RH
+    sensor = VirtualClimateSensor(
+        device_id="bed_sensor",
+        name="Bedroom Sensor",
+        room="bedroom",
+        initial_temp=20.0,
+        initial_rh=65.0,
+    )
+    registry.register(sensor)
+
+    # Dehumidifier initially OFF, target 55
+    dehumidifier = VirtualDehumidifier(
+        device_id="bed_dehumidifier",
+        name="Bedroom Dehumidifier",
+        room="bedroom",
+    )
+    dehumidifier.turn_off()
+    assert dehumidifier.is_on is False
+    registry.register(dehumidifier)
+
+    automation = CondensationPreventionAutomation(
+        target_dew_point_c=10.0,  # Safe target ~55% RH
+        auto_power=True,
+        turn_on_offset_rh=2.0,  # Threshold = 55 + 2 = 57%
+        min_cycle_seconds=300,
+    )
+
+    t1 = datetime(2026, 10, 23, 10, 0, 0)
+    logs = automation.evaluate(registry, event_bus, current_dt=t1)
+
+    # 65% RH >= 57% threshold -> turns ON
+    assert dehumidifier.is_on is True
+    assert any("Auto Turned ON" in line for line in logs)
+
+
+def test_auto_power_turns_off_when_rh_below_threshold():
+    from datetime import datetime
+
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    # Room sensor: 20°C, 48% RH (dry room)
+    sensor = VirtualClimateSensor(
+        device_id="bed_sensor",
+        name="Bedroom Sensor",
+        room="bedroom",
+        initial_temp=20.0,
+        initial_rh=48.0,
+    )
+    registry.register(sensor)
+
+    # Dehumidifier initially ON
+    dehumidifier = VirtualDehumidifier(
+        device_id="bed_dehumidifier",
+        name="Bedroom Dehumidifier",
+        room="bedroom",
+    )
+    dehumidifier.turn_on()
+    assert dehumidifier.is_on is True
+    registry.register(dehumidifier)
+
+    automation = CondensationPreventionAutomation(
+        target_dew_point_c=10.0,  # Safe target ~55% RH
+        auto_power=True,
+        turn_off_offset_rh=2.0,  # Threshold = 55 - 2 = 53%
+        min_cycle_seconds=300,
+    )
+
+    t1 = datetime(2026, 10, 23, 10, 0, 0)
+    logs = automation.evaluate(registry, event_bus, current_dt=t1)
+
+    # 48% RH <= 53% threshold -> turns OFF
+    assert dehumidifier.is_on is False
+    assert any("Auto Turned OFF" in line for line in logs)
+
+
+def test_auto_power_respects_min_cycle_cooldown():
+    from datetime import datetime
+
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    sensor = VirtualClimateSensor(
+        device_id="bed_sensor",
+        name="Bedroom Sensor",
+        room="bedroom",
+        initial_temp=20.0,
+        initial_rh=65.0,
+    )
+    registry.register(sensor)
+
+    dehumidifier = VirtualDehumidifier(
+        device_id="bed_dehumidifier",
+        name="Bedroom Dehumidifier",
+        room="bedroom",
+    )
+    dehumidifier.turn_off()
+    registry.register(dehumidifier)
+
+    automation = CondensationPreventionAutomation(
+        target_dew_point_c=10.0,
+        auto_power=True,
+        turn_on_offset_rh=2.0,
+        turn_off_offset_rh=2.0,
+        min_cycle_seconds=600,  # 10 minutes
+    )
+
+    t1 = datetime(2026, 10, 23, 10, 0, 0)
+    automation.evaluate(registry, event_bus, current_dt=t1)
+    assert dehumidifier.is_on is True
+
+    # Room suddenly drops below off-threshold 1 minute later
+    sensor.set_environment(temp_c=20.0, rh_pct=45.0)
+    t2 = datetime(2026, 10, 23, 10, 1, 0)  # Only 60s elapsed (< 600s)
+    logs2 = automation.evaluate(registry, event_bus, current_dt=t2)
+
+    # Cooldown blocks turn-off
+    assert dehumidifier.is_on is True
+    assert any("turn-off pending: cooldown" in line for line in logs2)
+
+
+def test_auto_power_skips_turn_on_when_room_excluded():
+    from datetime import datetime
+
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    sensor = VirtualClimateSensor(
+        device_id="bed_sensor",
+        name="Bedroom Sensor",
+        room="bedroom",
+        initial_temp=20.0,
+        initial_rh=75.0,  # Very high humidity
+    )
+    registry.register(sensor)
+
+    dehumidifier = VirtualDehumidifier(
+        device_id="bed_dehumidifier",
+        name="Bedroom Dehumidifier",
+        room="bedroom",
+    )
+    dehumidifier.turn_off()
+    registry.register(dehumidifier)
+
+    # Dummy object with label attribute
+    class DummyWindow:
+        label = "Night Exclusion"
+
+    def mock_exclusion_checker(room: str, dt: datetime | None):
+        return True, DummyWindow()
+
+    automation = CondensationPreventionAutomation(
+        target_dew_point_c=10.0,
+        auto_power=True,
+        exclusion_checker=mock_exclusion_checker,
+    )
+
+    t1 = datetime(2026, 10, 23, 3, 0, 0)
+    logs = automation.evaluate(registry, event_bus, current_dt=t1)
+
+    # Dehumidifier must stay OFF despite 75% RH because room is excluded
+    assert dehumidifier.is_on is False
+    assert any("EXCLUDED: 'Night Exclusion' - power blocked" in line for line in logs)
