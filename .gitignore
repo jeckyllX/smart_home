@@ -41,4 +41,7 @@ config.json
 tuya_devices.json
 snapshot.json
 tinytuya.json
+history.db
+history.db-wal
+history.db-shm
 AGENTS.md

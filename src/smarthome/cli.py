@@ -295,6 +295,37 @@ def cmd_scan_ble(args: argparse.Namespace) -> None:
     print()
 
 
+def cmd_service_unit(args: argparse.Namespace) -> None:
+    """Print a ready-to-install systemd service unit file for the current workspace."""
+    import getpass
+
+    workdir = Path.cwd().resolve()
+    config_path = Path(args.config).resolve()
+    venv_bin = Path(sys.executable).resolve().parent / "smarthome"
+    exec_bin = str(venv_bin) if venv_bin.exists() else f"{sys.executable} -m smarthome.cli"
+    user = getattr(args, "user", None) or getpass.getuser()
+    port = getattr(args, "port", 8765) or 8765
+
+    unit = (
+        "[Unit]\n"
+        "Description=SmartHome Psychrometric Climate & Automation Service\n"
+        "After=network-online.target bluetooth.target\n"
+        "Wants=network-online.target bluetooth.target\n\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"User={user}\n"
+        f"WorkingDirectory={workdir}\n"
+        f"ExecStart={exec_bin} --config {config_path} web --port {port}\n"
+        "Restart=on-failure\n"
+        "RestartSec=10\n"
+        "StandardOutput=journal\n"
+        "StandardError=journal\n\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+    print(unit)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Smart Home Platform CLI")
     parser.add_argument("--config", default="config.json", help="Path to configuration file")
@@ -439,6 +470,15 @@ def main():
         help="Scan timeout in seconds (default: 12.0)",
     )
     p_scan.set_defaults(func=cmd_scan_ble)
+
+    # service-unit
+    p_svc = subparsers.add_parser(
+        "service-unit",
+        help="Print a systemd service unit file pre-configured for the current directory",
+    )
+    p_svc.add_argument("--user", help="System user to run the service as (default: current user)")
+    p_svc.add_argument("--port", type=int, default=8765, help="Web UI port (default: 8765)")
+    p_svc.set_defaults(func=cmd_service_unit)
 
     args = parser.parse_args()
     args.func(args)

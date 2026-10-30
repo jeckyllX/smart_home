@@ -268,6 +268,55 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             border-bottom: 1px solid rgba(255,255,255,0.06);
         }
 
+        /* Alerts Banner */
+        .alerts-container {
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+            margin-bottom: 1.25rem;
+        }
+        .alert-banner {
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .alert-critical {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid var(--danger);
+            color: #fca5a5;
+        }
+        .alert-warning {
+            background: rgba(245, 158, 11, 0.2);
+            border: 1px solid var(--warning);
+            color: #fcd34d;
+        }
+
+        /* 24h SVG Trend Chart */
+        .chart-box {
+            background: rgba(15, 23, 42, 0.55);
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 8px;
+            padding: 0.75rem;
+        }
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.4rem;
+        }
+        .chart-legend {
+            display: flex;
+            gap: 0.75rem;
+            font-size: 0.7rem;
+            flex-wrap: wrap;
+        }
+
         /* Logs Console */
         .log-console {
             background: #090d16;
@@ -301,6 +350,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <button class="btn-primary btn-sm" onclick="triggerEvaluate()">Evaluate Now</button>
             </div>
         </header>
+
+        <!-- Active Health Alerts Banner -->
+        <div id="alerts-banner" class="alerts-container" style="display: none;"></div>
 
         <!-- Rooms Grid -->
         <main class="grid" id="rooms-grid">
@@ -356,6 +408,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                                 <option value="double">Double</option>
                                 <option value="triple">Triple</option>
                             </select>
+                        </div>
+                        <div class="form-field">
+                            <label for="cfg-override-mins">Manual Hold Duration (min)</label>
+                            <input type="number" id="cfg-override-mins" min="0" max="1440" step="15">
+                        </div>
+                    </div>
+
+                    <h3 style="margin: 1.25rem 0 0.75rem 0; color: var(--warning); font-size: 1rem;">1b. Health & Alert Notifications</h3>
+                    <div class="form-grid">
+                        <div class="form-field">
+                            <label for="cfg-low-batt">Low Battery Alert (%)</label>
+                            <input type="number" id="cfg-low-batt" min="1" max="50" step="5">
+                        </div>
+                        <div class="form-field">
+                            <label for="cfg-webhook-url">Alert Webhook URL (optional)</label>
+                            <input type="text" id="cfg-webhook-url" placeholder="https://ntfy.sh/your-topic">
                         </div>
                     </div>
 
@@ -444,6 +512,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
         let currentConfig = null;
         let currentState = null;
+        let roomHistory = {};
 
         function toggleAccordion(id) {
             const el = document.getElementById(id);
@@ -453,13 +522,37 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
         async function fetchState() {
             try {
-                const res = await fetch('/api/state');
-                currentState = await res.json();
+                const [stateRes, histRes] = await Promise.all([
+                    fetch('/api/state'),
+                    fetch('/api/history?hours=24')
+                ]);
+                currentState = await stateRes.json();
+                if (histRes.ok) {
+                    const histData = await histRes.json();
+                    roomHistory = histData.rooms || {};
+                }
+                renderAlerts(currentState.alerts || []);
                 renderRooms(currentState);
                 renderLogs(currentState);
             } catch (err) {
                 console.error("Failed to fetch state:", err);
             }
+        }
+
+        function renderAlerts(alerts) {
+            const container = document.getElementById('alerts-banner');
+            if (!alerts || !alerts.length) {
+                container.style.display = 'none';
+                container.innerHTML = '';
+                return;
+            }
+            container.style.display = 'flex';
+            container.innerHTML = alerts.map(a => `
+                <div class="alert-banner ${a.severity === 'critical' ? 'alert-critical' : 'alert-warning'}">
+                    <span>${a.severity === 'critical' ? '🚨' : '⚠️'} ${a.message}</span>
+                    <span class="badge ${a.severity === 'critical' ? 'badge-danger' : 'badge-warning'}">${a.severity}</span>
+                </div>
+            `).join('');
         }
 
         async function fetchConfig() {
@@ -518,9 +611,62 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 }
                 devicesHtml += '</div>';
 
-                card.innerHTML = headerHtml + psychoHtml + devicesHtml;
+                const chartHtml = renderRoomChart(room, roomHistory[room] || []);
+
+                card.innerHTML = headerHtml + psychoHtml + chartHtml + devicesHtml;
                 grid.appendChild(card);
             }
+        }
+
+        function renderRoomChart(room, points) {
+            if (!points || points.length < 2) {
+                return '';
+            }
+            const W = 340, H = 95, PAD = 10;
+            const tMin = Math.min(...points.map(p => Math.min(p.indoor_temp_c ?? 20, p.dew_point_c ?? 10, p.safe_dew_point_c ?? 10))) - 1;
+            const tMax = Math.max(...points.map(p => Math.max(p.indoor_temp_c ?? 20, p.dew_point_c ?? 10, p.safe_dew_point_c ?? 10))) + 1;
+            const tSpan = Math.max(2, tMax - tMin);
+
+            const xFor = i => PAD + (i / (points.length - 1)) * (W - 2 * PAD);
+            const yTemp = v => H - PAD - ((v - tMin) / tSpan) * (H - 2 * PAD);
+            const yRh = v => H - PAD - ((Math.max(20, Math.min(90, v)) - 20) / 70) * (H - 2 * PAD);
+
+            const poly = (getter, yFn) => points
+                .map((p, i) => getter(p) != null ? `${xFor(i).toFixed(1)},${yFn(getter(p)).toFixed(1)}` : null)
+                .filter(Boolean)
+                .join(' ');
+
+            const rhLine = poly(p => p.indoor_rh_percent, yRh);
+            const dpLine = poly(p => p.dew_point_c, yTemp);
+            const safeDpLine = poly(p => p.safe_dew_point_c, yTemp);
+
+            let onBars = '';
+            const barW = Math.max(2, (W - 2 * PAD) / points.length);
+            points.forEach((p, i) => {
+                if (p.is_on) {
+                    onBars += `<rect x="${xFor(i).toFixed(1)}" y="${PAD}" width="${barW.toFixed(1)}" height="${H - 2 * PAD}" fill="rgba(56, 189, 248, 0.14)" />`;
+                }
+            });
+
+            return `
+                <div class="chart-box">
+                    <div class="chart-header">
+                        <span>📈 24h Climate & Runtime (${points.length} pts)</span>
+                        <div class="chart-legend">
+                            <span style="color: #38bdf8;">━ RH%</span>
+                            <span style="color: #818cf8;">━ DewPt</span>
+                            <span style="color: #f59e0b;">┅ SafeDP</span>
+                            <span style="color: rgba(56, 189, 248, 0.7);">█ ON</span>
+                        </div>
+                    </div>
+                    <svg viewBox="0 0 ${W} ${H}" width="100%" height="95" style="display: block;">
+                        ${onBars}
+                        ${safeDpLine ? `<polyline fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3,3" points="${safeDpLine}" />` : ''}
+                        ${dpLine ? `<polyline fill="none" stroke="#818cf8" stroke-width="1.75" points="${dpLine}" />` : ''}
+                        ${rhLine ? `<polyline fill="none" stroke="#38bdf8" stroke-width="2" points="${rhLine}" />` : ''}
+                    </svg>
+                </div>
+            `;
         }
 
         function renderDeviceCard(dev, psycho) {
@@ -548,13 +694,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             // Controls for dehumidifiers
             if (isDehum) {
                 const isOn = dev.is_on;
+                const isHeld = dev.is_overridden;
+                const holdMins = dev.override_remaining_seconds ? Math.max(1, Math.ceil(dev.override_remaining_seconds / 60)) : 0;
                 html += `
                     <div class="control-group">
                         <div class="control-row">
                             <span style="font-size: 0.85rem; font-weight: 600;">Power</span>
-                            <button class="btn-sm ${isOn ? 'btn-primary' : 'btn-secondary'}" onclick="sendCommand('${dev.id}', '${isOn ? 'turn_off' : 'turn_on'}')">
-                                ${isOn ? '⚡ ON' : '⚪ OFF'}
-                            </button>
+                            <div style="display: flex; align-items: center; gap: 0.4rem;">
+                                ${isHeld ? `<span class="badge badge-warning">🔒 Hold ${holdMins}m</span>` : ''}
+                                <button class="btn-sm ${isOn ? 'btn-primary' : 'btn-secondary'}" onclick="sendCommand('${dev.id}', '${isOn ? 'turn_off' : 'turn_on'}')">
+                                    ${isOn ? '⚡ ON' : '⚪ OFF'}
+                                </button>
+                            </div>
                         </div>
                         <div class="control-row">
                             <span style="font-size: 0.85rem; font-weight: 600;">Target RH</span>
@@ -569,6 +720,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                                 ${(dev.supported_modes || ['manual', 'sleep', 'laundry', 'purify']).map(m => `
                                     <button class="mode-btn ${dev.current_mode === m ? 'active' : ''}" onclick="sendCommand('${dev.id}', 'set_mode', {mode: '${m}'})">${m}</button>
                                 `).join('')}
+                            </div>
+                        </div>
+                        <div class="control-row">
+                            <span style="font-size: 0.8rem; color: var(--text-muted);">Manual Hold</span>
+                            <div class="mode-buttons">
+                                <button class="mode-btn" onclick="sendCommand('${dev.id}', 'set_override', {minutes: 60})">1h</button>
+                                <button class="mode-btn" onclick="sendCommand('${dev.id}', 'set_override', {minutes: 120})">2h</button>
+                                <button class="mode-btn" onclick="sendCommand('${dev.id}', 'set_override', {minutes: 240})">4h</button>
+                                ${isHeld ? `<button class="mode-btn active" onclick="sendCommand('${dev.id}', 'clear_override')">Resume Auto</button>` : ''}
                             </div>
                         </div>
                     </div>
@@ -603,6 +763,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             document.getElementById('cfg-min-cycle').value = c.min_cycle_seconds || 600;
             document.getElementById('cfg-lookahead').value = c.lookahead_hours != null ? c.lookahead_hours : 12;
             document.getElementById('cfg-glazing').value = c.glazing || 'double';
+            document.getElementById('cfg-override-mins').value = c.manual_override_minutes != null ? c.manual_override_minutes : 120;
+
+            const a = cfg.alerts || {};
+            document.getElementById('cfg-low-batt').value = a.low_battery_threshold_percent != null ? a.low_battery_threshold_percent : 20;
+            document.getElementById('cfg-webhook-url').value = a.webhook_url || '';
 
             const s = cfg.quiet_schedule || {};
             document.getElementById('cfg-sched-enabled').checked = s.enabled !== false;
@@ -711,7 +876,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     turn_off_offset_rh: parseFloat(document.getElementById('cfg-off-offset').value),
                     min_cycle_seconds: parseInt(document.getElementById('cfg-min-cycle').value, 10),
                     lookahead_hours: parseInt(document.getElementById('cfg-lookahead').value, 10),
-                    glazing: document.getElementById('cfg-glazing').value
+                    glazing: document.getElementById('cfg-glazing').value,
+                    manual_override_minutes: parseInt(document.getElementById('cfg-override-mins').value, 10)
+                },
+                alerts: {
+                    enabled: true,
+                    low_battery_threshold_percent: parseInt(document.getElementById('cfg-low-batt').value, 10),
+                    webhook_url: document.getElementById('cfg-webhook-url').value.trim() || null
                 },
                 quiet_schedule: {
                     enabled: document.getElementById('cfg-sched-enabled').checked,

@@ -275,9 +275,10 @@ class TuyaDriver(Driver):
     Driver managing discovery and lifecycle of Tuya LAN devices.
     """
 
-    def __init__(self, devices_config: list[dict[str, Any]]):
+    def __init__(self, devices_config: list[dict[str, Any]], refresh_on_setup: bool = True):
         super().__init__(name="TuyaLANDriver")
         self._configs = devices_config
+        self._refresh_on_setup = refresh_on_setup
         self._devices: list[MeacoAreteTuyaDevice] = []
 
     def setup(self, registry: DeviceRegistry, event_bus: EventBus) -> bool:
@@ -291,8 +292,8 @@ class TuyaDriver(Driver):
                 version=float(cfg.get("version", 3.5)),
                 event_bus=event_bus,
             )
-            # Perform initial poll
-            dev.refresh()
+            if self._refresh_on_setup:
+                dev.refresh()
             self._devices.append(dev)
             registry.register(dev)
         return True

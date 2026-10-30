@@ -177,3 +177,13 @@ def test_cli_device_subcommands(monkeypatch, capsys):
     cli.main()
     out = capsys.readouterr().out
     assert "Turned OFF 'LR Dehumidifier'." in out
+
+
+def test_cli_service_unit(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["smarthome", "service-unit", "--user", "pi", "--port", "9000"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "[Unit]" in out
+    assert "User=pi" in out
+    assert "web --port 9000" in out
+    assert "[Install]" in out

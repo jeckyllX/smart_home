@@ -170,15 +170,18 @@ class ThermoProScannerHub:
         self,
         scan_timeout_seconds: float = 12.0,
         cache_ttl_seconds: float = 30.0,
+        stale_ttl_seconds: float = 900.0,
         scan_backend: Callable[[float, set[str]], dict[str, ThermoProReading]] | None = None,
     ):
         self.scan_timeout_seconds = scan_timeout_seconds
         self.cache_ttl_seconds = cache_ttl_seconds
+        self.stale_ttl_seconds = stale_ttl_seconds
         self._scan_backend = scan_backend or default_ble_scanner
 
         self._lock = threading.Lock()
         self._registered_macs: set[str] = set()
         self._cache: dict[str, ThermoProReading] = {}
+        self._reading_timestamps: dict[str, float] = {}
         self._last_scan_time: float = 0.0
 
     def register_mac(self, mac: str) -> None:
@@ -205,10 +208,24 @@ class ThermoProScannerHub:
             targets = set(self._registered_macs)
 
         results = self._scan_backend(self.scan_timeout_seconds, targets)
+        now = time.time()
 
         with self._lock:
-            self._cache.update(results)
-            self._last_scan_time = time.time()
+            for mac, reading in results.items():
+                self._cache[mac] = reading
+                self._reading_timestamps[mac] = now
+
+            # Evict readings that have exceeded stale_ttl_seconds
+            stale_macs = [
+                m
+                for m, ts in self._reading_timestamps.items()
+                if (now - ts) >= self.stale_ttl_seconds
+            ]
+            for m in stale_macs:
+                self._cache.pop(m, None)
+                self._reading_timestamps.pop(m, None)
+
+            self._last_scan_time = now
             return dict(self._cache)
 
 
@@ -227,6 +244,7 @@ class ThermoProBleDevice(ClimateSensorDevice, BatteryLevelTrait):
         model: str = "TP35x",
         scanner_hub: ThermoProScannerHub | None = None,
         event_bus: EventBus | None = None,
+        stale_ttl_seconds: float = 900.0,
     ):
         super().__init__(
             device_id=device_id,
@@ -239,6 +257,7 @@ class ThermoProBleDevice(ClimateSensorDevice, BatteryLevelTrait):
         self.mac = normalize_mac(mac)
         self.scanner_hub = scanner_hub or ThermoProScannerHub()
         self.event_bus = event_bus
+        self.stale_ttl_seconds = stale_ttl_seconds
 
         # Register BatteryLevelTrait
         self.register_trait(BatteryLevelTrait, self)
@@ -247,6 +266,7 @@ class ThermoProBleDevice(ClimateSensorDevice, BatteryLevelTrait):
         self._temp_c: float | None = None
         self._rh_pct: float | None = None
         self._battery_pct: int | None = None
+        self._last_seen_time: float | None = None
         self._is_online = False
 
         self.scanner_hub.register_mac(self.mac)
@@ -254,6 +274,10 @@ class ThermoProBleDevice(ClimateSensorDevice, BatteryLevelTrait):
     @property
     def is_online(self) -> bool:
         return self._is_online
+
+    @property
+    def last_seen_time(self) -> float | None:
+        return self._last_seen_time
 
     @property
     def temperature_celsius(self) -> float | None:
@@ -269,14 +293,24 @@ class ThermoProBleDevice(ClimateSensorDevice, BatteryLevelTrait):
 
     def refresh(self) -> bool:
         reading = self.scanner_hub.get_reading(self.mac)
+        now = time.time()
         with self._lock:
             if reading is None:
+                if (
+                    self._last_seen_time is not None
+                    and (now - self._last_seen_time) < self.stale_ttl_seconds
+                ):
+                    # Within grace window: retain previous reading and online status
+                    return True
                 self._is_online = False
+                self._temp_c = None
+                self._rh_pct = None
                 return False
 
             self._temp_c = reading.temperature_celsius
             self._rh_pct = reading.humidity_percent
             self._battery_pct = reading.battery_percent
+            self._last_seen_time = now
             self._is_online = True
             if reading.model and reading.model != "TP35x":
                 self.model = reading.model
@@ -318,10 +352,12 @@ class ThermoProDriver(Driver):
         self,
         devices_config: list[dict[str, Any]],
         scanner_hub: ThermoProScannerHub | None = None,
+        refresh_on_setup: bool = True,
     ):
         super().__init__(name="ThermoProBleDriver")
         self._configs = devices_config
         self._scanner_hub = scanner_hub or ThermoProScannerHub()
+        self._refresh_on_setup = refresh_on_setup
         self._devices: list[ThermoProBleDevice] = []
 
     def setup(self, registry: DeviceRegistry, event_bus: EventBus) -> bool:
@@ -351,7 +387,7 @@ class ThermoProDriver(Driver):
             registry.register(device)
 
         # Trigger single scan pass to initialize all registered devices
-        if self._devices:
+        if self._devices and self._refresh_on_setup:
             self._scanner_hub.scan_all()
             for dev in self._devices:
                 dev.refresh()

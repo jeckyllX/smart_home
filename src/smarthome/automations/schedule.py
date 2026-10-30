@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from datetime import time as dtime
+from typing import Callable
 
 from smarthome.automations.base import Automation
 from smarthome.config.schema import ExclusionWindowConfig
@@ -40,6 +41,7 @@ class QuietScheduleAutomation(Automation):
         night_days: list[str] | None = None,
         all_day_sleep_days: list[str] | None = None,
         exclusion_windows: list[ExclusionWindowConfig] | None = None,
+        override_checker: Callable[[str, float | None], tuple[bool, int]] | None = None,
     ):
         super().__init__(name=name, enabled=enabled)
         self.start_time = start_time
@@ -50,6 +52,7 @@ class QuietScheduleAutomation(Automation):
         self.night_days = [d.lower() for d in (night_days or WEEKDAY_NAMES)]
         self.all_day_sleep_days = [d.lower() for d in (all_day_sleep_days or [])]
         self.exclusion_windows = list(exclusion_windows or [])
+        self.override_checker = override_checker
 
     def is_room_excluded(
         self, room: str, now: datetime | None = None
@@ -124,6 +127,15 @@ class QuietScheduleAutomation(Automation):
         for dev in mode_devices:
             if self.rooms and dev.room.lower() not in [r.lower() for r in self.rooms]:
                 continue
+
+            if self.override_checker:
+                is_held, rem_sec = self.override_checker(dev.id, now.timestamp())
+                if is_held:
+                    logs.append(
+                        f"Room '{dev.room}': {dev.name} schedule sync skipped "
+                        f"[MANUAL HOLD: {max(1, rem_sec // 60)}m remaining]."
+                    )
+                    continue
 
             mode_trait = dev.require_trait(ModeControlTrait)
             if target_mode not in mode_trait.supported_modes:

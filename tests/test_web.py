@@ -16,6 +16,7 @@ from smarthome.web.server import SmartHomeWebServer
 
 def _setup_test_app(tmp_path: Path) -> SmartHomeApplication:
     config_file = tmp_path / "config.json"
+    history_file = tmp_path / "history.db"
     payload = {
         "location": {"latitude": 0.0, "longitude": 0.0, "city": "Test City"},
         "devices": [
@@ -31,13 +32,21 @@ def _setup_test_app(tmp_path: Path) -> SmartHomeApplication:
         "condensation": {"enabled": True, "target_dew_point_c": 11.0},
         "quiet_schedule": {"enabled": True},
         "web": {"enabled": True, "port": 0},
+        "history_db_path": str(history_file),
     }
     cfg = SmartHomeConfig.from_dict(payload)
     cfg.save(config_file)
 
-    app = SmartHomeApplication(cfg)
+    app = SmartHomeApplication(cfg, refresh_on_init=False)
 
     # Register virtual test devices into registry for deterministic test control
+    outdoor = VirtualClimateSensor(
+        device_id="weather_outdoor",
+        name="Virtual Outdoor",
+        room="outdoor",
+        initial_temp=8.0,
+        initial_rh=80.0,
+    )
     dehum = VirtualDehumidifier(
         device_id="test_dh",
         name="Bedroom Dehumidifier",
@@ -50,6 +59,7 @@ def _setup_test_app(tmp_path: Path) -> SmartHomeApplication:
         initial_temp=21.0,
         initial_rh=58.0,
     )
+    app.registry.register(outdoor)
     app.registry.register(dehum)
     app.registry.register(sensor)
 
@@ -109,6 +119,21 @@ def test_web_server_endpoints(tmp_path: Path):
         dehum = app.registry.get("test_dh")
         assert dehum is not None
         assert dehum.target_humidity_percent == 50
+        is_held, rem_sec = app.is_device_overridden("test_dh")
+        assert is_held is True
+        assert rem_sec > 0
+
+        # Clear manual override via API
+        clear_payload = json.dumps({"action": "clear_override"}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base_url}/api/devices/test_dh/command",
+            data=clear_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            assert resp.status == 200
+        assert app.is_device_overridden("test_dh")[0] is False
 
         # 5. Test PUT /api/config
         update_payload = json.dumps(
@@ -139,6 +164,14 @@ def test_web_server_endpoints(tmp_path: Path):
             eval_resp = json.loads(resp.read().decode("utf-8"))
             assert eval_resp["success"] is True
             assert isinstance(eval_resp["logs"], list)
+
+        # 7. Test GET /api/history
+        req = urllib.request.Request(f"{base_url}/api/history?room=bedroom&hours=24")
+        with urllib.request.urlopen(req) as resp:
+            assert resp.status == 200
+            hist_resp = json.loads(resp.read().decode("utf-8"))
+            assert hist_resp["room"] == "bedroom"
+            assert len(hist_resp["points"]) >= 1
 
     finally:
         server.stop()

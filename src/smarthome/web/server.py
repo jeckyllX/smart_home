@@ -11,7 +11,7 @@ import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from smarthome.web.ui import DASHBOARD_HTML
 
@@ -64,6 +64,22 @@ class SmartHomeRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/state":
             state = self.server.app.get_dashboard_state()
             self._send_json(state)
+        elif path == "/api/history":
+            qs = parse_qs(parsed.query)
+            room_vals = qs.get("room")
+            hours_vals = qs.get("hours")
+            try:
+                hours = float(hours_vals[0]) if hours_vals else 24.0
+            except (ValueError, IndexError):
+                hours = 24.0
+
+            if room_vals and room_vals[0]:
+                room_name = room_vals[0]
+                points = self.server.app.history_store.get_room_history(room_name, hours=hours)
+                self._send_json({"room": room_name, "hours": hours, "points": points})
+            else:
+                rooms_hist = self.server.app.history_store.get_all_rooms_history(hours=hours)
+                self._send_json({"hours": hours, "rooms": rooms_hist})
         elif path == "/api/config":
             cfg_dict = self.server.app.config.to_dict()
             # Redact sensitive keys

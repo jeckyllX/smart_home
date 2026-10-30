@@ -143,11 +143,18 @@ class OpenMeteoDriver(Driver):
     Driver initializing Open-Meteo weather station devices.
     """
 
-    def __init__(self, latitude: float, longitude: float, name: str = "Outdoor Weather"):
+    def __init__(
+        self,
+        latitude: float,
+        longitude: float,
+        name: str = "Outdoor Weather",
+        refresh_on_setup: bool = True,
+    ):
         super().__init__(name="OpenMeteoDriver")
         self.latitude = latitude
         self.longitude = longitude
         self.station_name = name
+        self.refresh_on_setup = refresh_on_setup
         self._device: OpenMeteoWeatherDevice | None = None
 
     def setup(self, registry: DeviceRegistry, event_bus: EventBus) -> bool:
@@ -159,7 +166,8 @@ class OpenMeteoDriver(Driver):
             room="outdoor",
             event_bus=event_bus,
         )
-        dev.refresh()
+        if self.refresh_on_setup:
+            dev.refresh()
         self._device = dev
         registry.register(dev)
         return True

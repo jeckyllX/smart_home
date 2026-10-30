@@ -1,0 +1,17 @@
+[Unit]
+Description=SmartHome Psychrometric Climate & Automation Service
+After=network-online.target bluetooth.target
+Wants=network-online.target bluetooth.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/smarthome
+ExecStart=/opt/smarthome/.venv/bin/smarthome --config /opt/smarthome/config.json web --port 8765
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

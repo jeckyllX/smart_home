@@ -78,6 +78,7 @@ class CondensationAutomationConfig:
     turn_on_offset_rh: float = 2.0
     turn_off_offset_rh: float = 2.0
     min_cycle_seconds: int = 600
+    manual_override_minutes: int = 120
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +95,7 @@ class CondensationAutomationConfig:
             "turn_on_offset_rh": self.turn_on_offset_rh,
             "turn_off_offset_rh": self.turn_off_offset_rh,
             "min_cycle_seconds": self.min_cycle_seconds,
+            "manual_override_minutes": self.manual_override_minutes,
         }
 
 
@@ -128,6 +130,33 @@ class QuietScheduleAutomationConfig:
 
 
 @dataclass
+class AlertsConfig:
+    enabled: bool = True
+    low_battery_threshold_percent: int = 20
+    webhook_url: str | None = None
+    webhook_cooldown_minutes: int = 60
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "low_battery_threshold_percent": self.low_battery_threshold_percent,
+            "webhook_url": self.webhook_url,
+            "webhook_cooldown_minutes": self.webhook_cooldown_minutes,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AlertsConfig:
+        webhook_raw = data.get("webhook_url")
+        webhook_url = str(webhook_raw).strip() if webhook_raw else None
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            low_battery_threshold_percent=int(data.get("low_battery_threshold_percent", 20)),
+            webhook_url=webhook_url or None,
+            webhook_cooldown_minutes=int(data.get("webhook_cooldown_minutes", 60)),
+        )
+
+
+@dataclass
 class WebServerConfig:
     enabled: bool = True
     host: str = "0.0.0.0"
@@ -158,8 +187,11 @@ class SmartHomeConfig:
     quiet_schedule: QuietScheduleAutomationConfig = field(
         default_factory=QuietScheduleAutomationConfig
     )
+    alerts: AlertsConfig = field(default_factory=AlertsConfig)
     web: WebServerConfig = field(default_factory=WebServerConfig)
     polling_interval_seconds: int = 60
+    history_db_path: str = "history.db"
+    history_retention_days: int = 7
     raw_path: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -182,8 +214,11 @@ class SmartHomeConfig:
             },
             "condensation": self.condensation.to_dict(),
             "quiet_schedule": self.quiet_schedule.to_dict(),
+            "alerts": self.alerts.to_dict(),
             "web": self.web.to_dict(),
             "polling_interval_seconds": self.polling_interval_seconds,
+            "history_db_path": self.history_db_path,
+            "history_retention_days": self.history_retention_days,
         }
 
     def save(self, path: str | Path | None = None) -> None:
@@ -261,6 +296,7 @@ class SmartHomeConfig:
             turn_on_offset_rh=float(cond_data.get("turn_on_offset_rh", 2.0)),
             turn_off_offset_rh=float(cond_data.get("turn_off_offset_rh", 2.0)),
             min_cycle_seconds=int(cond_data.get("min_cycle_seconds", 600)),
+            manual_override_minutes=int(cond_data.get("manual_override_minutes", 120)),
         )
 
         # Quiet Schedule (canonical key first, legacy alias as fallback)
@@ -296,6 +332,10 @@ class SmartHomeConfig:
             exclusion_windows=exclusion_windows,
         )
 
+        # Alerts config
+        alerts_data = data.get("alerts", {})
+        alerts = AlertsConfig.from_dict(alerts_data if isinstance(alerts_data, dict) else {})
+
         # Web server config
         web_data = data.get("web", {})
         web = WebServerConfig.from_dict(web_data)
@@ -306,8 +346,11 @@ class SmartHomeConfig:
             ble_devices=ble_devices,
             condensation=condensation,
             quiet_schedule=quiet_schedule,
+            alerts=alerts,
             web=web,
             polling_interval_seconds=int(data.get("polling_interval_seconds", 60)),
+            history_db_path=str(data.get("history_db_path", "history.db")),
+            history_retention_days=int(data.get("history_retention_days", 7)),
         )
 
     @classmethod

@@ -247,6 +247,40 @@ def test_thermopro_ble_device_refresh_offline():
     assert device.temperature_celsius is None
 
 
+def test_thermopro_ble_device_grace_window_and_staleness():
+    reading = ThermoProReading(
+        temperature_celsius=20.4,
+        humidity_percent=52.0,
+        battery_percent=100,
+        model="TP350",
+    )
+    mock_hub = MagicMock(spec=ThermoProScannerHub)
+    mock_hub.get_reading.return_value = reading
+
+    device = ThermoProBleDevice(
+        device_id="tp_grace",
+        mac="A4:C1:38:00:11:22",
+        scanner_hub=mock_hub,
+        stale_ttl_seconds=600.0,
+    )
+    assert device.refresh() is True
+    assert device.is_online is True
+    assert device.temperature_celsius == 20.4
+
+    # Transient missed packet within grace window retains reading and online state
+    mock_hub.get_reading.return_value = None
+    assert device.refresh() is True
+    assert device.is_online is True
+    assert device.temperature_celsius == 20.4
+
+    # Once stale_ttl_seconds expires, device transitions offline and clears stale reading
+    assert device._last_seen_time is not None
+    device._last_seen_time -= 700.0
+    assert device.refresh() is False
+    assert device.is_online is False
+    assert device.temperature_celsius is None
+
+
 def test_thermopro_driver_setup_and_registration():
     configs = [
         {

@@ -71,6 +71,7 @@ class CondensationPreventionAutomation(Automation):
         turn_off_offset_rh: float = 2.0,
         min_cycle_seconds: int = 600,
         exclusion_checker: Callable[[str, datetime | None], tuple[bool, Any]] | None = None,
+        override_checker: Callable[[str, float | None], tuple[bool, int]] | None = None,
     ):
         super().__init__(name=name, enabled=enabled)
         self.outdoor_room = outdoor_room
@@ -87,6 +88,7 @@ class CondensationPreventionAutomation(Automation):
         self.turn_off_offset_rh = turn_off_offset_rh
         self.min_cycle_seconds = min_cycle_seconds
         self.exclusion_checker = exclusion_checker
+        self.override_checker = override_checker
         self._last_power_change: dict[str, float] = {}
 
     def compute_room_status(
@@ -146,6 +148,11 @@ class CondensationPreventionAutomation(Automation):
         last_change = self._last_power_change.get(dehum_dev.id, 0.0)
         cooldown_left = max(0.0, self.min_cycle_seconds - (now_ts - last_change))
 
+        is_overridden = False
+        override_rem = 0
+        if self.override_checker:
+            is_overridden, override_rem = self.override_checker(dehum_dev.id, now_ts)
+
         target_base = safe_target_rh or 55
         turn_on_rh = target_base + self.turn_on_offset_rh
         turn_off_rh = target_base - self.turn_off_offset_rh
@@ -166,6 +173,8 @@ class CondensationPreventionAutomation(Automation):
             "turn_off_threshold_rh": turn_off_rh,
             "is_excluded": is_excluded,
             "exclusion_label": exclusion_label,
+            "is_overridden": is_overridden,
+            "override_remaining_seconds": override_rem,
             "cooldown_remaining_seconds": cooldown_left,
         }
 
@@ -286,6 +295,13 @@ class CondensationPreventionAutomation(Automation):
                 log_entry += f" [EXCLUDED: '{ex_label}' - power blocked]"
                 logs.append(log_entry)
                 continue
+
+            if self.override_checker:
+                is_held, rem_sec = self.override_checker(dehum_dev.id, now_ts)
+                if is_held:
+                    log_entry += f" [MANUAL HOLD: {max(1, rem_sec // 60)}m remaining]"
+                    logs.append(log_entry)
+                    continue
 
             # 5. Target setpoint adjustment (with deadband)
             within_deadband = (

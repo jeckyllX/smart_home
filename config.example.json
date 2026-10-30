@@ -44,7 +44,8 @@
         "auto_power": true,
         "turn_on_offset_rh": 2.0,
         "turn_off_offset_rh": 2.0,
-        "min_cycle_seconds": 600
+        "min_cycle_seconds": 600,
+        "manual_override_minutes": 120
     },
     "quiet_schedule": {
         "enabled": true,
@@ -65,10 +66,18 @@
             }
         ]
     },
+    "alerts": {
+        "enabled": true,
+        "low_battery_threshold_percent": 20,
+        "webhook_url": null,
+        "webhook_cooldown_minutes": 60
+    },
     "web": {
         "enabled": true,
         "host": "0.0.0.0",
         "port": 8765
     },
-    "polling_interval_seconds": 60
+    "polling_interval_seconds": 60,
+    "history_db_path": "history.db",
+    "history_retention_days": 7
 }
