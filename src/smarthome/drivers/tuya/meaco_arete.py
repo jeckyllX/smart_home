@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any
 
 import tinytuya
@@ -223,6 +224,13 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
         mode_str = mode.lower()
         if mode_str not in self.MODES:
             raise ValueError(f"Mode '{mode}' not supported. Options: {self.MODES}")
+
+        # The Meaco Arete firmware requires a night mode exit toggle before accepting
+        # a transition to another operational mode (mimicking physical double-press requirement).
+        if self.current_mode == "sleep" and mode_str != "sleep":
+            self._send_command(self.DP_MODE, "sleep", "exit_sleep_wake")
+            time.sleep(0.5)
+
         return self._send_command(self.DP_MODE, mode_str, "set_mode")
 
     # --- TankLevelTrait & StatusFlagsTrait ---
