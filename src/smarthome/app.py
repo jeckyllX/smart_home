@@ -226,21 +226,38 @@ class SmartHomeApplication:
 
             # 3. Record historical room psychrometric snapshot
             if cond_auto:
-                for dehum in self.registry.find_devices_with_trait(HumidityControlTrait):
+                rooms_to_record = [
+                    r
+                    for r in self.registry.all_rooms()
+                    if r != "outdoor"
+                    and any(
+                        dev.has_trait(TemperatureSensorTrait)
+                        or dev.has_trait(HumiditySensorTrait)
+                        or dev.has_trait(HumidityControlTrait)
+                        for dev in self.registry.get_by_room(r)
+                    )
+                ]
+                for room in rooms_to_record:
                     try:
-                        r_status = cond_auto.compute_room_status(self.registry, dehum.room, dehum)
-                        on_off = dehum.get_trait(OnOffTrait)
+                        dehum = next(
+                            (
+                                d
+                                for d in self.registry.find_devices_with_trait(HumidityControlTrait)
+                                if d.room == room
+                            ),
+                            None,
+                        )
+                        r_status = cond_auto.compute_room_status(self.registry, room, dehum)
+                        on_off = dehum.get_trait(OnOffTrait) if dehum else None
                         is_on = on_off.is_on if on_off else None
                         self.history_store.record_room_snapshot(
-                            room=dehum.room,
+                            room=room,
                             status=r_status,
                             is_on=is_on,
                             timestamp=now_ts,
                         )
                     except Exception as e:
-                        logger.warning(
-                            "Failed to record history snapshot for %s: %s", dehum.room, e
-                        )
+                        logger.warning("Failed to record history snapshot for %s: %s", room, e)
 
             return results
 
@@ -409,9 +426,28 @@ class SmartHomeApplication:
             # Compute room psychrometrics
             room_psychrometrics: dict[str, Any] = {}
             if cond_auto:
-                for dehum in self.registry.find_devices_with_trait(HumidityControlTrait):
-                    r_status = cond_auto.compute_room_status(self.registry, dehum.room, dehum)
-                    room_psychrometrics[dehum.room] = r_status
+                rooms_to_compute = [
+                    r
+                    for r in self.registry.all_rooms()
+                    if r != "outdoor"
+                    and any(
+                        dev.has_trait(TemperatureSensorTrait)
+                        or dev.has_trait(HumiditySensorTrait)
+                        or dev.has_trait(HumidityControlTrait)
+                        for dev in self.registry.get_by_room(r)
+                    )
+                ]
+                for room in rooms_to_compute:
+                    dehum = next(
+                        (
+                            d
+                            for d in self.registry.find_devices_with_trait(HumidityControlTrait)
+                            if d.room == room
+                        ),
+                        None,
+                    )
+                    r_status = cond_auto.compute_room_status(self.registry, room, dehum)
+                    room_psychrometrics[room] = r_status
 
             active_alerts = alert_auto.active_alerts if alert_auto else []
 

@@ -76,7 +76,7 @@ class CondensationPreventionAutomation(Automation):
         super().__init__(name=name, enabled=enabled)
         self.outdoor_room = outdoor_room
         self.default_indoor_temp = default_indoor_temp_c
-        self.glazing = glazing
+        self.glazing = GlazingType(glazing) if isinstance(glazing, str) else glazing
         self.min_target_rh = min_target_rh
         self.max_target_rh = max_target_rh
         self.safety_margin_c = safety_margin_c
@@ -95,7 +95,7 @@ class CondensationPreventionAutomation(Automation):
         self,
         registry: DeviceRegistry,
         room: str,
-        dehum_dev: Device,
+        dehum_dev: Device | None = None,
         current_dt: datetime | None = None,
     ) -> dict[str, Any]:
         """
@@ -125,7 +125,7 @@ class CondensationPreventionAutomation(Automation):
 
         if safe_dew_point is not None:
             raw_safe_rh = calculate_rh_for_dew_point(indoor_temp, safe_dew_point)
-            control_trait = dehum_dev.get_trait(HumidityControlTrait)
+            control_trait = dehum_dev.get_trait(HumidityControlTrait) if dehum_dev else None
             dev_min, dev_max = (
                 control_trait.humidity_range
                 if control_trait
@@ -145,12 +145,14 @@ class CondensationPreventionAutomation(Automation):
                 exclusion_label = getattr(ex_obj, "label", "Exclusion")
 
         now_ts = current_dt.timestamp() if current_dt else time.time()
-        last_change = self._last_power_change.get(dehum_dev.id, 0.0)
-        cooldown_left = max(0.0, self.min_cycle_seconds - (now_ts - last_change))
+        last_change = self._last_power_change.get(dehum_dev.id, 0.0) if dehum_dev else 0.0
+        cooldown_left = (
+            max(0.0, self.min_cycle_seconds - (now_ts - last_change)) if dehum_dev else 0.0
+        )
 
         is_overridden = False
         override_rem = 0
-        if self.override_checker:
+        if self.override_checker and dehum_dev:
             is_overridden, override_rem = self.override_checker(dehum_dev.id, now_ts)
 
         target_base = safe_target_rh or 55
@@ -396,14 +398,17 @@ class CondensationPreventionAutomation(Automation):
         return effective
 
     def _get_room_climate(
-        self, registry: DeviceRegistry, room: str, fallback_dehumidifier: Device
+        self,
+        registry: DeviceRegistry,
+        room: str,
+        fallback_dehumidifier: Device | None = None,
     ) -> _RoomClimate:
         room_temps: list[float] = []
         room_rhs: list[float] = []
 
         # Prefer dedicated climate sensors in the room over the dehumidifier's own.
         for dev in registry.get_by_room(room):
-            if dev.id == fallback_dehumidifier.id:
+            if fallback_dehumidifier and dev.id == fallback_dehumidifier.id:
                 continue
             t_trait = dev.get_trait(TemperatureSensorTrait)
             h_trait = dev.get_trait(HumiditySensorTrait)
@@ -422,7 +427,7 @@ class CondensationPreventionAutomation(Automation):
         if room_rhs:
             rh = max(room_rhs)
             rh_from_builtin = False
-        else:
+        elif fallback_dehumidifier:
             # Fall back to the dehumidifier's built-in sensor.
             h_trait = fallback_dehumidifier.get_trait(HumiditySensorTrait)
             if h_trait and h_trait.humidity_percent is not None:
@@ -431,5 +436,8 @@ class CondensationPreventionAutomation(Automation):
             else:
                 rh = None
                 rh_from_builtin = False
+        else:
+            rh = None
+            rh_from_builtin = False
 
         return _RoomClimate(temp, rh, temp_assumed, rh_from_builtin)

@@ -59,9 +59,17 @@ def _setup_test_app(tmp_path: Path) -> SmartHomeApplication:
         initial_temp=21.0,
         initial_rh=58.0,
     )
+    living_sensor = VirtualClimateSensor(
+        device_id="living_sensor",
+        name="Living Room Sensor",
+        room="living_room",
+        initial_temp=20.5,
+        initial_rh=54.0,
+    )
     app.registry.register(outdoor)
     app.registry.register(dehum)
     app.registry.register(sensor)
+    app.registry.register(living_sensor)
 
     return app
 
@@ -93,7 +101,12 @@ def test_web_server_endpoints(tmp_path: Path):
             data = json.loads(resp.read().decode("utf-8"))
             assert "rooms" in data
             assert "bedroom" in data["rooms"]
+            assert "living_room" in data["rooms"]
             assert "psychrometrics" in data
+            assert "bedroom" in data["psychrometrics"]
+            assert "living_room" in data["psychrometrics"]
+            assert data["psychrometrics"]["living_room"]["indoor_temp_c"] == 20.5
+            assert data["psychrometrics"]["living_room"]["indoor_rh_percent"] == 54.0
 
         # 3. Test GET /api/config (local_key must be redacted)
         req = urllib.request.Request(f"{base_url}/api/config")
@@ -165,13 +178,30 @@ def test_web_server_endpoints(tmp_path: Path):
             assert eval_resp["success"] is True
             assert isinstance(eval_resp["logs"], list)
 
-        # 7. Test GET /api/history
+        # 7. Test GET /api/history (specific room and all rooms)
         req = urllib.request.Request(f"{base_url}/api/history?room=bedroom&hours=24")
         with urllib.request.urlopen(req) as resp:
             assert resp.status == 200
             hist_resp = json.loads(resp.read().decode("utf-8"))
             assert hist_resp["room"] == "bedroom"
             assert len(hist_resp["points"]) >= 1
+
+        req = urllib.request.Request(f"{base_url}/api/history?room=living_room&hours=24")
+        with urllib.request.urlopen(req) as resp:
+            assert resp.status == 200
+            hist_resp = json.loads(resp.read().decode("utf-8"))
+            assert hist_resp["room"] == "living_room"
+            assert len(hist_resp["points"]) >= 1
+            assert hist_resp["points"][-1]["indoor_temp_c"] == 20.5
+            assert hist_resp["points"][-1]["indoor_rh_percent"] == 54.0
+
+        req = urllib.request.Request(f"{base_url}/api/history?hours=24")
+        with urllib.request.urlopen(req) as resp:
+            assert resp.status == 200
+            all_hist = json.loads(resp.read().decode("utf-8"))
+            assert "rooms" in all_hist
+            assert "bedroom" in all_hist["rooms"]
+            assert "living_room" in all_hist["rooms"]
 
     finally:
         server.stop()

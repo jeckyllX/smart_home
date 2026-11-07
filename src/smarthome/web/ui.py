@@ -297,24 +297,59 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
         /* 24h SVG Trend Chart */
         .chart-box {
-            background: rgba(15, 23, 42, 0.55);
-            border: 1px solid rgba(255,255,255,0.05);
-            border-radius: 8px;
-            padding: 0.75rem;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 10px;
+            padding: 0.85rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
         }
         .chart-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            font-size: 0.75rem;
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: var(--text);
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .chart-hint {
+            font-size: 0.72rem;
             color: var(--text-muted);
-            margin-bottom: 0.4rem;
+            background: rgba(255, 255, 255, 0.025);
+            padding: 0.4rem 0.65rem;
+            border-radius: 6px;
+            border-left: 3px solid var(--warning);
+            line-height: 1.4;
+        }
+        .chart-inspect-bar {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.72rem;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(56, 189, 248, 0.25);
+            border-radius: 6px;
+            padding: 0.35rem 0.6rem;
+            color: var(--text);
+            min-height: 26px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 0.35rem;
         }
         .chart-legend {
             display: flex;
-            gap: 0.75rem;
+            gap: 0.65rem;
             font-size: 0.7rem;
             flex-wrap: wrap;
+            align-items: center;
+        }
+        .chart-legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
         }
 
         /* Logs Console */
@@ -565,6 +600,68 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             }
         }
 
+        window.__roomPoints = window.__roomPoints || {};
+
+        function onChartHover(e, safeId) {
+            const points = window.__roomPoints[safeId];
+            if (!points || points.length < 2) return;
+            const svg = document.getElementById('chart-svg-' + safeId);
+            if (!svg) return;
+            const rect = svg.getBoundingClientRect();
+            const clientX = e.clientX ?? (e.touches && e.touches[0] ? e.touches[0].clientX : null);
+            if (clientX == null) return;
+            const relX = clientX - rect.left;
+            const W = 380, PAD_LEFT = 32, PAD_RIGHT = 12;
+            const svgX = (relX / rect.width) * W;
+            const clampedX = Math.max(PAD_LEFT, Math.min(W - PAD_RIGHT, svgX));
+            const ratio = (clampedX - PAD_LEFT) / (W - PAD_LEFT - PAD_RIGHT);
+            const idx = Math.max(0, Math.min(points.length - 1, Math.round(ratio * (points.length - 1))));
+
+            const curLine = document.getElementById('cursor-line-' + safeId);
+            if (curLine) {
+                curLine.setAttribute('x1', clampedX.toFixed(1));
+                curLine.setAttribute('x2', clampedX.toFixed(1));
+                curLine.setAttribute('visibility', 'visible');
+            }
+            updateInspectBar(safeId, points[idx], false);
+        }
+
+        function onChartTouch(e, safeId) {
+            if (e.touches && e.touches.length) {
+                onChartHover(e.touches[0], safeId);
+            }
+        }
+
+        function onChartLeave(safeId) {
+            const curLine = document.getElementById('cursor-line-' + safeId);
+            if (curLine) {
+                curLine.setAttribute('visibility', 'hidden');
+            }
+            const points = window.__roomPoints[safeId];
+            if (points && points.length) {
+                updateInspectBar(safeId, points[points.length - 1], true);
+            }
+        }
+
+        function updateInspectBar(safeId, pt, isLatest) {
+            const bar = document.getElementById('chart-inspect-' + safeId);
+            if (!bar || !pt) return;
+            const d = new Date(pt.timestamp * 1000);
+            const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const tag = isLatest ? 'Latest' : timeStr;
+
+            const tStr = pt.indoor_temp_c != null ? `${pt.indoor_temp_c.toFixed(1)}°C` : '--';
+            const rhStr = pt.indoor_rh_percent != null ? `${Math.round(pt.indoor_rh_percent)}%` : '--';
+            const dpStr = pt.dew_point_c != null ? `${pt.dew_point_c.toFixed(1)}°C` : '--';
+            const safeStr = pt.safe_dew_point_c != null ? `${pt.safe_dew_point_c.toFixed(1)}°C` : '--';
+
+            let html = `<span><strong>${tag}:</strong> 🌡️ <span style="color:#f43f5e;font-weight:700;">${tStr}</span> | 💧 <span style="color:#38bdf8;font-weight:700;">${rhStr} RH</span> | 💧 DewPt: <span style="color:#818cf8;font-weight:700;">${dpStr}</span> (Window Limit: <span style="color:#f59e0b;font-weight:700;">${safeStr}</span>)</span>`;
+            if (pt.is_on != null) {
+                html += `<span class="badge ${pt.is_on ? 'badge-primary' : 'badge-secondary'}" style="font-size:0.65rem;">${pt.is_on ? '⚡ ON' : '⚪ OFF'}</span>`;
+            }
+            bar.innerHTML = html;
+        }
+
         function renderRooms(state) {
             const grid = document.getElementById('rooms-grid');
             if (!state || !state.rooms) return;
@@ -575,9 +672,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 const card = document.createElement('div');
                 card.className = 'card';
 
+                const isOutdoor = room === 'outdoor';
                 let headerHtml = `
                     <div class="card-header">
-                        <span class="room-title">📍 ${room}</span>
+                        <span class="room-title">${isOutdoor ? '🌤️ Outdoor Weather' : '📍 ' + room}</span>
                         ${psycho && psycho.is_excluded ? `<span class="badge badge-danger">Excluded (${psycho.exclusion_label || 'Active'})</span>` : ''}
                     </div>
                 `;
@@ -594,12 +692,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             <div class="metric-box">
                                 <div class="metric-label">Dew Point</div>
                                 <div class="metric-value" style="color: var(--accent);">${psycho.dew_point_c != null ? psycho.dew_point_c.toFixed(1) + '°C' : '--'}</div>
-                                <div class="metric-sub">Safe: ${psycho.safe_dew_point_c != null ? psycho.safe_dew_point_c.toFixed(1) + '°C' : '--'}</div>
+                                <div class="metric-sub">Window Limit: ${psycho.safe_dew_point_c != null ? psycho.safe_dew_point_c.toFixed(1) + '°C' : '--'}</div>
                             </div>
                             <div class="metric-box">
                                 <div class="metric-label">Condens. Limit</div>
                                 <div class="metric-value" style="color: var(--warning);">${psycho.raw_safe_rh_percent != null ? psycho.raw_safe_rh_percent.toFixed(1) + '%' : '--'}</div>
-                                <div class="metric-sub">Target: ${psycho.safe_target_rh || '--'}%</div>
+                                <div class="metric-sub">${psycho.safe_target_rh ? 'Target: ' + psycho.safe_target_rh + '%' : '--'}</div>
                             </div>
                         </div>
                     `;
@@ -611,7 +709,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 }
                 devicesHtml += '</div>';
 
-                const chartHtml = renderRoomChart(room, roomHistory[room] || []);
+                const chartHtml = isOutdoor ? '' : renderRoomChart(room, roomHistory[room] || []);
 
                 card.innerHTML = headerHtml + psychoHtml + chartHtml + devicesHtml;
                 grid.appendChild(card);
@@ -619,51 +717,193 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
 
         function renderRoomChart(room, points) {
-            if (!points || points.length < 2) {
-                return '';
+            const safeId = room.replace(/[^a-zA-Z0-9_-]/g, '_');
+            window.__roomPoints[safeId] = points || [];
+
+            if (!points || points.length === 0) {
+                return `
+                    <div class="chart-box">
+                        <div class="chart-header">
+                            <span>📈 24h Climate & Condensation</span>
+                        </div>
+                        <div class="chart-hint" style="border-left-color: var(--primary);">
+                            ℹ️ <strong>Gathering Telemetry:</strong> Periodic sensor snapshots are recorded every cycle. History trend lines will appear here shortly.
+                        </div>
+                    </div>
+                `;
             }
-            const W = 340, H = 95, PAD = 10;
-            const tMin = Math.min(...points.map(p => Math.min(p.indoor_temp_c ?? 20, p.dew_point_c ?? 10, p.safe_dew_point_c ?? 10))) - 1;
-            const tMax = Math.max(...points.map(p => Math.max(p.indoor_temp_c ?? 20, p.dew_point_c ?? 10, p.safe_dew_point_c ?? 10))) + 1;
-            const tSpan = Math.max(2, tMax - tMin);
 
-            const xFor = i => PAD + (i / (points.length - 1)) * (W - 2 * PAD);
-            const yTemp = v => H - PAD - ((v - tMin) / tSpan) * (H - 2 * PAD);
-            const yRh = v => H - PAD - ((Math.max(20, Math.min(90, v)) - 20) / 70) * (H - 2 * PAD);
+            if (points.length === 1) {
+                const pt = points[0];
+                const tStr = pt.indoor_temp_c != null ? `${pt.indoor_temp_c.toFixed(1)}°C` : '--';
+                const rhStr = pt.indoor_rh_percent != null ? `${Math.round(pt.indoor_rh_percent)}%` : '--';
+                const dpStr = pt.dew_point_c != null ? `${pt.dew_point_c.toFixed(1)}°C` : '--';
+                return `
+                    <div class="chart-box">
+                        <div class="chart-header">
+                            <span>📈 24h Climate & Condensation (1 point)</span>
+                        </div>
+                        <div class="chart-hint">
+                            💡 <strong>Initial snapshot captured.</strong> Trend lines will begin plotting after the next evaluation cycle.
+                        </div>
+                        <div class="chart-inspect-bar" id="chart-inspect-${safeId}">
+                            <span><strong>Current:</strong> 🌡️ <span style="color:#f43f5e">${tStr}</span> | 💧 <span style="color:#38bdf8">${rhStr}</span> | 💧 DewPt: <span style="color:#818cf8">${dpStr}</span></span>
+                        </div>
+                    </div>
+                `;
+            }
 
+            // Dimensions
+            const W = 380, H = 176, PAD_LEFT = 32, PAD_RIGHT = 12;
+            const PLOT_W = W - PAD_LEFT - PAD_RIGHT;
+
+            // Track 1: Humidity (%) -> Y: 14 to 68
+            const T1_TOP = 14, T1_HEIGHT = 54, T1_BOTTOM = 68;
+            const rhVals = points.map(p => p.indoor_rh_percent).filter(v => v != null);
+            let rhMinRaw = rhVals.length ? Math.min(...rhVals) : 40;
+            let rhMaxRaw = rhVals.length ? Math.max(...rhVals) : 60;
+            let rhMin = Math.max(20, Math.floor((rhMinRaw - 3) / 5) * 5);
+            let rhMax = Math.min(95, Math.ceil((rhMaxRaw + 3) / 5) * 5);
+            if (rhMax - rhMin < 15) { rhMax = rhMin + 15; }
+            const rhMid = Math.round((rhMin + rhMax) / 2);
+
+            const xFor = i => PAD_LEFT + (i / (points.length - 1)) * PLOT_W;
+            const yRh = v => T1_BOTTOM - ((Math.min(rhMax, Math.max(rhMin, v)) - rhMin) / (rhMax - rhMin)) * T1_HEIGHT;
+
+            // Track 2: Temperatures (°C) -> Y: 84 to 154
+            const T2_TOP = 84, T2_HEIGHT = 70, T2_BOTTOM = 154;
+            const tVals = [];
+            points.forEach(p => {
+                if (p.indoor_temp_c != null) tVals.push(p.indoor_temp_c);
+                if (p.dew_point_c != null) tVals.push(p.dew_point_c);
+                if (p.safe_dew_point_c != null) tVals.push(p.safe_dew_point_c);
+            });
+            let tMinRaw = tVals.length ? Math.min(...tVals) : 10;
+            let tMaxRaw = tVals.length ? Math.max(...tVals) : 25;
+            let tMin = Math.floor(tMinRaw - 1);
+            let tMax = Math.ceil(tMaxRaw + 1);
+            if (tMax - tMin < 4) { tMax = tMin + 4; }
+            const tMid = Math.round((tMin + tMax) / 2);
+
+            const yTemp = v => T2_BOTTOM - ((Math.min(tMax, Math.max(tMin, v)) - tMin) / (tMax - tMin)) * T2_HEIGHT;
+
+            // Polylines
             const poly = (getter, yFn) => points
-                .map((p, i) => getter(p) != null ? `${xFor(i).toFixed(1)},${yFn(getter(p)).toFixed(1)}` : null)
+                .map((p, i) => {
+                    const v = getter(p);
+                    return v != null ? `${xFor(i).toFixed(1)},${yFn(v).toFixed(1)}` : null;
+                })
                 .filter(Boolean)
                 .join(' ');
 
             const rhLine = poly(p => p.indoor_rh_percent, yRh);
+            const tempLine = poly(p => p.indoor_temp_c, yTemp);
             const dpLine = poly(p => p.dew_point_c, yTemp);
             const safeDpLine = poly(p => p.safe_dew_point_c, yTemp);
 
+            // Shaded area under RH
+            let rhArea = '';
+            if (rhLine) {
+                rhArea = `<polygon points="${PAD_LEFT},${T1_BOTTOM} ${rhLine} ${W - PAD_RIGHT},${T1_BOTTOM}" fill="url(#rhGrad-${safeId})" />`;
+            }
+
+            // Power ON bars
             let onBars = '';
-            const barW = Math.max(2, (W - 2 * PAD) / points.length);
+            let hasPowerData = false;
+            const barW = Math.max(1.5, PLOT_W / points.length);
             points.forEach((p, i) => {
                 if (p.is_on) {
-                    onBars += `<rect x="${xFor(i).toFixed(1)}" y="${PAD}" width="${barW.toFixed(1)}" height="${H - 2 * PAD}" fill="rgba(56, 189, 248, 0.14)" />`;
+                    hasPowerData = true;
+                    onBars += `<rect x="${xFor(i).toFixed(1)}" y="${T1_TOP}" width="${barW.toFixed(1)}" height="${T1_HEIGHT}" fill="rgba(56, 189, 248, 0.18)" />`;
                 }
             });
+
+            // Target RH line
+            let targetRhLine = '';
+            const lastTarget = points.findLast ? points.findLast(p => p.target_rh != null)?.target_rh : (points.slice().reverse().find(p => p.target_rh != null)?.target_rh);
+            if (lastTarget != null && lastTarget >= rhMin && lastTarget <= rhMax) {
+                const targetY = yRh(lastTarget).toFixed(1);
+                targetRhLine = `<line x1="${PAD_LEFT}" y1="${targetY}" x2="${W - PAD_RIGHT}" y2="${targetY}" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="3,3" opacity="0.8" />`;
+            }
+
+            const latest = points[points.length - 1];
+            const latestD = new Date(latest.timestamp * 1000);
+            const latestTime = latestD.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const latestT = latest.indoor_temp_c != null ? `${latest.indoor_temp_c.toFixed(1)}°C` : '--';
+            const latestRh = latest.indoor_rh_percent != null ? `${Math.round(latest.indoor_rh_percent)}%` : '--';
+            const latestDp = latest.dew_point_c != null ? `${latest.dew_point_c.toFixed(1)}°C` : '--';
+            const latestSafe = latest.safe_dew_point_c != null ? `${latest.safe_dew_point_c.toFixed(1)}°C` : '--';
 
             return `
                 <div class="chart-box">
                     <div class="chart-header">
-                        <span>📈 24h Climate & Runtime (${points.length} pts)</span>
+                        <span>📈 24h Climate & Condensation (${points.length} pts)</span>
                         <div class="chart-legend">
-                            <span style="color: #38bdf8;">━ RH%</span>
-                            <span style="color: #818cf8;">━ DewPt</span>
-                            <span style="color: #f59e0b;">┅ SafeDP</span>
-                            <span style="color: rgba(56, 189, 248, 0.7);">█ ON</span>
+                            <span class="chart-legend-item"><span style="color: #38bdf8;">━</span> RH%</span>
+                            <span class="chart-legend-item"><span style="color: #f43f5e;">━</span> Room Temp</span>
+                            <span class="chart-legend-item"><span style="color: #818cf8;">━</span> Dew Point</span>
+                            <span class="chart-legend-item"><span style="color: #f59e0b;">┅</span> Window Limit</span>
+                            ${hasPowerData ? `<span class="chart-legend-item"><span style="color: rgba(56, 189, 248, 0.9);">█</span> ON</span>` : ''}
                         </div>
                     </div>
-                    <svg viewBox="0 0 ${W} ${H}" width="100%" height="95" style="display: block;">
+
+                    <div class="chart-hint">
+                        💡 <strong>Condensation Guide:</strong> Dew Point is when water condenses. Keeping <strong>Dew Point (indigo)</strong> below the <strong>Window Limit (amber)</strong> prevents condensation and mold on window glass.
+                    </div>
+
+                    <div class="chart-inspect-bar" id="chart-inspect-${safeId}">
+                        <span><strong>Latest (${latestTime}):</strong> 🌡️ <span style="color:#f43f5e;font-weight:700;">${latestT}</span> | 💧 <span style="color:#38bdf8;font-weight:700;">${latestRh} RH</span> | 💧 DewPt: <span style="color:#818cf8;font-weight:700;">${latestDp}</span> (Window Limit: <span style="color:#f59e0b;font-weight:700;">${latestSafe}</span>)</span>
+                        ${latest.is_on != null ? `<span class="badge ${latest.is_on ? 'badge-primary' : 'badge-secondary'}" style="font-size:0.65rem;">${latest.is_on ? '⚡ ON' : '⚪ OFF'}</span>` : ''}
+                    </div>
+
+                    <svg id="chart-svg-${safeId}" viewBox="0 0 ${W} ${H}" width="100%" height="176" style="display: block; cursor: crosshair; user-select: none;" onmousemove="onChartHover(event, '${safeId}')" onmouseleave="onChartLeave('${safeId}')" ontouchmove="onChartTouch(event, '${safeId}')" ontouchend="onChartLeave('${safeId}')">
+                        <defs>
+                            <linearGradient id="rhGrad-${safeId}" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.25"/>
+                                <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.0"/>
+                            </linearGradient>
+                        </defs>
+
+                        <!-- Track 1 Background & Grid (Humidity %) -->
+                        <text x="${PAD_LEFT}" y="10" fill="#94a3b8" font-size="8.5" font-weight="700">HUMIDITY (%)</text>
+                        <line x1="${PAD_LEFT}" y1="${T1_TOP}" x2="${W - PAD_RIGHT}" y2="${T1_TOP}" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2,2" />
+                        <text x="${PAD_LEFT - 4}" y="${T1_TOP + 3}" fill="#64748b" font-size="8" text-anchor="end">${rhMax}%</text>
+
+                        <line x1="${PAD_LEFT}" y1="${T1_TOP + T1_HEIGHT / 2}" x2="${W - PAD_RIGHT}" y2="${T1_TOP + T1_HEIGHT / 2}" stroke="rgba(255,255,255,0.04)" stroke-dasharray="2,2" />
+                        <text x="${PAD_LEFT - 4}" y="${T1_TOP + T1_HEIGHT / 2 + 3}" fill="#64748b" font-size="8" text-anchor="end">${rhMid}%</text>
+
+                        <line x1="${PAD_LEFT}" y1="${T1_BOTTOM}" x2="${W - PAD_RIGHT}" y2="${T1_BOTTOM}" stroke="rgba(255,255,255,0.08)" />
+                        <text x="${PAD_LEFT - 4}" y="${T1_BOTTOM + 3}" fill="#64748b" font-size="8" text-anchor="end">${rhMin}%</text>
+
                         ${onBars}
-                        ${safeDpLine ? `<polyline fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3,3" points="${safeDpLine}" />` : ''}
-                        ${dpLine ? `<polyline fill="none" stroke="#818cf8" stroke-width="1.75" points="${dpLine}" />` : ''}
+                        ${rhArea}
+                        ${targetRhLine}
                         ${rhLine ? `<polyline fill="none" stroke="#38bdf8" stroke-width="2" points="${rhLine}" />` : ''}
+
+                        <!-- Track 2 Background & Grid (Temperature & Dew Point °C) -->
+                        <text x="${PAD_LEFT}" y="80" fill="#94a3b8" font-size="8.5" font-weight="700">TEMPERATURE & DEW POINT (°C)</text>
+                        <line x1="${PAD_LEFT}" y1="${T2_TOP}" x2="${W - PAD_RIGHT}" y2="${T2_TOP}" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2,2" />
+                        <text x="${PAD_LEFT - 4}" y="${T2_TOP + 3}" fill="#64748b" font-size="8" text-anchor="end">${tMax}°C</text>
+
+                        <line x1="${PAD_LEFT}" y1="${T2_TOP + T2_HEIGHT / 2}" x2="${W - PAD_RIGHT}" y2="${T2_TOP + T2_HEIGHT / 2}" stroke="rgba(255,255,255,0.04)" stroke-dasharray="2,2" />
+                        <text x="${PAD_LEFT - 4}" y="${T2_TOP + T2_HEIGHT / 2 + 3}" fill="#64748b" font-size="8" text-anchor="end">${tMid}°C</text>
+
+                        <line x1="${PAD_LEFT}" y1="${T2_BOTTOM}" x2="${W - PAD_RIGHT}" y2="${T2_BOTTOM}" stroke="rgba(255,255,255,0.08)" />
+                        <text x="${PAD_LEFT - 4}" y="${T2_BOTTOM + 3}" fill="#64748b" font-size="8" text-anchor="end">${tMin}°C</text>
+
+                        ${safeDpLine ? `<polyline fill="none" stroke="#f59e0b" stroke-width="1.6" stroke-dasharray="3,3" points="${safeDpLine}" />` : ''}
+                        ${dpLine ? `<polyline fill="none" stroke="#818cf8" stroke-width="2" points="${dpLine}" />` : ''}
+                        ${tempLine ? `<polyline fill="none" stroke="#f43f5e" stroke-width="1.8" points="${tempLine}" />` : ''}
+
+                        <!-- Time Axis -->
+                        <text x="${PAD_LEFT}" y="168" fill="#64748b" font-size="7.5" text-anchor="start">-24h</text>
+                        <text x="${PAD_LEFT + PLOT_W * 0.25}" y="168" fill="#64748b" font-size="7.5" text-anchor="middle">-18h</text>
+                        <text x="${PAD_LEFT + PLOT_W * 0.5}" y="168" fill="#64748b" font-size="7.5" text-anchor="middle">-12h</text>
+                        <text x="${PAD_LEFT + PLOT_W * 0.75}" y="168" fill="#64748b" font-size="7.5" text-anchor="middle">-6h</text>
+                        <text x="${W - PAD_RIGHT}" y="168" fill="#64748b" font-size="7.5" text-anchor="end">Now</text>
+
+                        <!-- Interactive Cursor -->
+                        <line id="cursor-line-${safeId}" x1="0" y1="${T1_TOP}" x2="0" y2="${T2_BOTTOM}" stroke="rgba(255,255,255,0.45)" stroke-width="1" stroke-dasharray="2,2" visibility="hidden" />
                     </svg>
                 </div>
             `;

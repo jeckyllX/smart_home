@@ -586,3 +586,39 @@ def test_auto_power_skips_turn_on_when_room_excluded():
     # Dehumidifier must stay OFF despite 75% RH because room is excluded
     assert dehumidifier.is_on is False
     assert any("EXCLUDED: 'Night Exclusion' - power blocked" in line for line in logs)
+
+
+def test_compute_room_status_without_dehumidifier():
+    registry = DeviceRegistry()
+
+    # Living room with only climate sensor (no dehumidifier)
+    living_sensor = VirtualClimateSensor(
+        device_id="living_sensor",
+        name="Living Room Sensor",
+        room="living_room",
+        initial_temp=21.0,
+        initial_rh=55.0,
+    )
+    registry.register(living_sensor)
+
+    outdoor = VirtualClimateSensor(
+        device_id="outdoor_sensor",
+        name="Outdoor Sensor",
+        room="outdoor",
+        initial_temp=5.0,
+        initial_rh=80.0,
+    )
+    registry.register(outdoor)
+
+    automation = CondensationPreventionAutomation(glazing="double")
+    status = automation.compute_room_status(registry, "living_room", dehum_dev=None)
+
+    assert status["indoor_temp_c"] == 21.0
+    assert status["indoor_rh_percent"] == 55.0
+    assert status["temp_assumed"] is False
+    assert status["dew_point_c"] is not None
+    assert round(status["dew_point_c"], 1) == 11.6
+    assert status["safe_dew_point_c"] is not None
+    assert status["safe_target_rh"] is not None
+    assert status["cooldown_remaining_seconds"] == 0.0
+    assert status["is_overridden"] is False
