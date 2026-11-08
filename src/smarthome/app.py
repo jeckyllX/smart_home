@@ -34,7 +34,7 @@ from smarthome.core.traits import (
 )
 from smarthome.drivers.ble.thermopro import ThermoProDriver
 from smarthome.drivers.tuya.meaco_arete import TuyaDriver
-from smarthome.drivers.weather.open_meteo import OpenMeteoDriver
+from smarthome.drivers.weather.open_meteo import OpenMeteoDriver, OpenMeteoWeatherDevice
 from smarthome.storage.history import TelemetryStore
 
 logger = logging.getLogger("SmartHomeApp")
@@ -278,6 +278,14 @@ class SmartHomeApplication:
 
             self.config = new_cfg
             self._setup_automations()
+
+            # Update live weather station if location changed
+            weather_dev = self.registry.get("weather_outdoor")
+            if isinstance(weather_dev, OpenMeteoWeatherDevice):
+                weather_dev.latitude = new_cfg.location.latitude
+                weather_dev.longitude = new_cfg.location.longitude
+                weather_dev.name = f"Weather Station ({new_cfg.location.city})"
+                weather_dev.refresh(force=True)
 
             if self.config.raw_path:
                 try:

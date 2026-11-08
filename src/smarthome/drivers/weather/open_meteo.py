@@ -80,10 +80,10 @@ class OpenMeteoWeatherDevice(ClimateSensorDevice, TemperatureForecastTrait):
             return None
         return min(self._hourly_temps_c[:hours])
 
-    def refresh(self) -> bool:
+    def refresh(self, force: bool = False) -> bool:
         now = time.time()
         with self._lock:
-            if self._temp_c is not None and (now - self._last_fetch < self.cache_ttl):
+            if not force and self._temp_c is not None and (now - self._last_fetch < self.cache_ttl):
                 return True
 
         try:
