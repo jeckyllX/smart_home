@@ -5,24 +5,29 @@ Open-Meteo weather driver that registers an outdoor ClimateSensorDevice.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
+from typing import Any
 
 import requests
 
 from smarthome.core.device import DeviceCategory
 from smarthome.core.events import EventBus, TelemetryEvent
 from smarthome.core.registry import DeviceRegistry
-from smarthome.core.traits import TemperatureForecastTrait
+from smarthome.core.traits import StatusFlagsTrait, TemperatureForecastTrait
 from smarthome.devices.climate import ClimateSensorDevice
 from smarthome.drivers.base import Driver
+from smarthome.physics.psychrometrics import calculate_rh_for_dew_point
 
 logger = logging.getLogger("OpenMeteoDriver")
 
 
-class OpenMeteoWeatherDevice(ClimateSensorDevice, TemperatureForecastTrait):
+class OpenMeteoWeatherDevice(ClimateSensorDevice, TemperatureForecastTrait, StatusFlagsTrait):
     """
-    Virtual outdoor weather station backed by Open-Meteo public API.
+    Hybrid outdoor weather station combining:
+    1. Real-world physical ground observations from the nearest airport station (METAR).
+    2. Numerical weather prediction forecast from Open-Meteo for 24h predictive lookahead.
     """
 
     ENDPOINT = "https://api.open-meteo.com/v1/forecast"
@@ -51,12 +56,14 @@ class OpenMeteoWeatherDevice(ClimateSensorDevice, TemperatureForecastTrait):
         self.event_bus = event_bus
 
         self.register_trait(TemperatureForecastTrait, self)
+        self.register_trait(StatusFlagsTrait, self)
 
         self._lock = threading.Lock()
         self._last_fetch = 0.0
         self._temp_c: float | None = None
         self._rh_pct: float | None = None
         self._hourly_temps_c: tuple[float, ...] = ()
+        self._station_source: str = "Initializing"
         self._is_online = False
 
     @property
@@ -75,10 +82,79 @@ class OpenMeteoWeatherDevice(ClimateSensorDevice, TemperatureForecastTrait):
     def hourly_temperature_forecast_celsius(self) -> tuple[float, ...]:
         return self._hourly_temps_c
 
+    @property
+    def status_flags(self) -> tuple[str, ...]:
+        if self._station_source:
+            return (self._station_source,)
+        return ()
+
+    @property
+    def station_source(self) -> str:
+        return self._station_source
+
     def min_forecast_temperature(self, hours: int) -> float | None:
         if hours <= 0 or not self._hourly_temps_c:
             return None
         return min(self._hourly_temps_c[:hours])
+
+    def _fetch_nearest_metar(self) -> tuple[float | None, float | None, str | None]:
+        """
+        Query aviationweather.gov for the nearest physical airport weather station
+        around (self.latitude, self.longitude).
+        Returns (temp_c, rh_pct, source_label) or (None, None, None) on failure.
+        """
+        try:
+            lat, lon = self.latitude, self.longitude
+            # Search within ~80 km bounding box
+            d_lat = 0.75
+            d_lon = 1.0
+            bbox = f"{lat - d_lat:.4f},{lon - d_lon:.4f},{lat + d_lat:.4f},{lon + d_lon:.4f}"
+            url = f"https://aviationweather.gov/api/data/metar?bbox={bbox}&format=json"
+            headers = {"User-Agent": "SmartHome/1.0"}
+            resp = requests.get(url, headers=headers, timeout=5.0)
+            if not resp.ok:
+                return None, None, None
+
+            data = resp.json()
+            if not isinstance(data, list) or not data:
+                return None, None, None
+
+            candidates = [
+                s
+                for s in data
+                if isinstance(s, dict)
+                and s.get("temp") is not None
+                and s.get("lat") is not None
+                and s.get("lon") is not None
+            ]
+            if not candidates:
+                return None, None, None
+
+            cos_lat = math.cos(math.radians(lat))
+
+            def dist_sq(s: dict[str, Any]) -> float:
+                return (float(s["lat"]) - lat) ** 2 + ((float(s["lon"]) - lon) * cos_lat) ** 2
+
+            nearest = min(candidates, key=dist_sq)
+            station_id = str(nearest.get("icaoId") or "METAR")
+            source_label = f"Physical ({station_id})"
+            temp_c = float(nearest["temp"])
+
+            # Compute or extract RH from temp and dew point
+            rh_pct: float | None = None
+            dewp = nearest.get("dewp")
+            if dewp is not None:
+                try:
+                    dewp_c = float(dewp)
+                    rh_pct = calculate_rh_for_dew_point(temp_c, dewp_c)
+                    rh_pct = max(0.0, min(100.0, rh_pct))
+                except Exception:
+                    rh_pct = None
+
+            return temp_c, rh_pct, source_label
+        except Exception as e:
+            logger.debug("Nearest physical station lookup skipped: %s", e)
+            return None, None, None
 
     def refresh(self, force: bool = False) -> bool:
         now = time.time()
@@ -105,10 +181,24 @@ class OpenMeteoWeatherDevice(ClimateSensorDevice, TemperatureForecastTrait):
             hourly_temps = tuple(float(t) for t in raw_hourly if t is not None)
 
             if temp is not None and rh is not None:
+                source = "Open-Meteo Model"
+                temp_c = float(temp)
+                rh_pct = float(rh)
+
+                # Augment with live physical ground observation from nearest airport station
+                obs_temp, obs_rh, obs_source = self._fetch_nearest_metar()
+                if obs_temp is not None:
+                    temp_c = obs_temp
+                    if obs_rh is not None:
+                        rh_pct = obs_rh
+                    if obs_source is not None:
+                        source = obs_source
+
                 with self._lock:
-                    self._temp_c = float(temp)
-                    self._rh_pct = float(rh)
+                    self._temp_c = temp_c
+                    self._rh_pct = rh_pct
                     self._hourly_temps_c = hourly_temps
+                    self._station_source = source
                     self._last_fetch = now
                     self._is_online = True
 
