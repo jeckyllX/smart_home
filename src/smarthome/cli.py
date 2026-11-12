@@ -26,6 +26,7 @@ from smarthome.core.traits import (
     trait_names,
 )
 from smarthome.physics.psychrometrics import quantize_rh
+from smarthome.storage.history import TelemetryStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,25 +35,50 @@ logging.basicConfig(
 )
 
 
-def get_app(config_path: str) -> SmartHomeApplication:
+def _build_app(
+    config_path: str,
+    *,
+    refresh_on_init: bool = False,
+    persistent_history: bool = False,
+) -> SmartHomeApplication:
     p = Path(config_path)
     if not p.exists():
         sys.exit(f"Error: Config file '{config_path}' not found.")
     cfg = SmartHomeConfig.from_file(p)
-    return SmartHomeApplication(cfg)
+    history_store = None if persistent_history else TelemetryStore(db_path=":memory:")
+    return SmartHomeApplication(
+        cfg,
+        refresh_on_init=refresh_on_init,
+        history_store=history_store,
+    )
 
 
-def cmd_list(args):
+def get_app(config_path: str) -> SmartHomeApplication:
+    return _build_app(config_path, refresh_on_init=False, persistent_history=False)
+
+
+def _close_app(app: SmartHomeApplication) -> None:
+    store = getattr(app, "history_store", None)
+    if store is not None:
+        store.close()
+
+
+def cmd_list(args: argparse.Namespace) -> None:
     app = get_app(args.config)
-    devices = app.registry.all_devices()
-    rooms = len(app.registry.all_rooms())
-    print(f"\nRegistered Smart Home Devices ({len(devices)} total across {rooms} rooms):\n")
-    print(f"{'ID':<20} | {'Name':<24} | {'Room':<14} | {'Category':<16} | {'Online'}")
-    print("-" * 88)
-    for d in devices:
-        status_str = "ONLINE" if d.is_online else "OFFLINE"
-        print(f"{d.id:<20} | {d.name:<24} | {d.room:<14} | {d.category.value:<16} | {status_str}")
-    print()
+    try:
+        devices = app.registry.all_devices()
+        rooms = len(app.registry.all_rooms())
+        print(f"\nRegistered Smart Home Devices ({len(devices)} total across {rooms} rooms):\n")
+        print(f"{'ID':<20} | {'Name':<24} | {'Room':<14} | {'Category':<16} | {'Online'}")
+        print("-" * 88)
+        for d in devices:
+            status_str = "ONLINE" if d.is_online else "OFFLINE"
+            print(
+                f"{d.id:<20} | {d.name:<24} | {d.room:<14} | {d.category.value:<16} | {status_str}"
+            )
+        print()
+    finally:
+        _close_app(app)
 
 
 def cmd_find(args: argparse.Namespace) -> None:
@@ -77,65 +103,69 @@ def cmd_find(args: argparse.Namespace) -> None:
     print()
 
 
-def cmd_status(args):
+def cmd_status(args: argparse.Namespace) -> None:
     app = get_app(args.config)
-    dev = app.registry.get(args.device_id)
-    if not dev:
-        sys.exit(f"Device '{args.device_id}' not found.")
+    try:
+        dev = app.registry.get(args.device_id)
+        if not dev:
+            sys.exit(f"Device '{args.device_id}' not found.")
 
-    dev.refresh()
-    print(f"\n--- Device Details: {dev.name} ({dev.id}) ---")
-    print(f"  Manufacturer:       {dev.manufacturer}")
-    print(f"  Model:              {dev.model}")
-    print(f"  Category:           {dev.category.value}")
-    print(f"  Room / Zone:        {dev.room}")
-    print(f"  Online Status:      {dev.is_online}")
+        dev.refresh()
+        print(f"\n--- Device Details: {dev.name} ({dev.id}) ---")
+        print(f"  Manufacturer:       {dev.manufacturer}")
+        print(f"  Model:              {dev.model}")
+        print(f"  Category:           {dev.category.value}")
+        print(f"  Room / Zone:        {dev.room}")
+        print(f"  Online Status:      {dev.is_online}")
 
-    # Print the traits the device exposes
-    on_off = dev.get_trait(OnOffTrait)
-    if on_off:
-        print(f"  Power State:        {'ON' if on_off.is_on else 'OFF'}")
+        # Print the traits the device exposes
+        on_off = dev.get_trait(OnOffTrait)
+        if on_off:
+            print(f"  Power State:        {'ON' if on_off.is_on else 'OFF'}")
 
-    t_sensor = dev.get_trait(TemperatureSensorTrait)
-    if t_sensor and t_sensor.temperature_celsius is not None:
-        print(f"  Temperature:        {t_sensor.temperature_celsius:.1f} °C")
+        t_sensor = dev.get_trait(TemperatureSensorTrait)
+        if t_sensor and t_sensor.temperature_celsius is not None:
+            print(f"  Temperature:        {t_sensor.temperature_celsius:.1f} °C")
 
-    t_forecast = dev.get_trait(TemperatureForecastTrait)
-    if t_forecast:
-        min_12h = t_forecast.min_forecast_temperature(12)
-        if min_12h is not None:
-            print(f"  12h Forecast Min:   {min_12h:.1f} °C")
+        t_forecast = dev.get_trait(TemperatureForecastTrait)
+        if t_forecast:
+            min_12h = t_forecast.min_forecast_temperature(12)
+            if min_12h is not None:
+                print(f"  12h Forecast Min:   {min_12h:.1f} °C")
 
-    h_sensor = dev.get_trait(HumiditySensorTrait)
-    if h_sensor and h_sensor.humidity_percent is not None:
-        print(f"  Relative Humidity:  {h_sensor.humidity_percent:.0f} %")
+        h_sensor = dev.get_trait(HumiditySensorTrait)
+        if h_sensor and h_sensor.humidity_percent is not None:
+            print(f"  Relative Humidity:  {h_sensor.humidity_percent:.0f} %")
 
-    batt = dev.get_trait(BatteryLevelTrait)
-    if batt and batt.battery_percent is not None:
-        print(f"  Battery Level:      {batt.battery_percent} %")
+        batt = dev.get_trait(BatteryLevelTrait)
+        if batt and batt.battery_percent is not None:
+            print(f"  Battery Level:      {batt.battery_percent} %")
 
-    h_ctrl = dev.get_trait(HumidityControlTrait)
-    if h_ctrl and h_ctrl.target_humidity_percent is not None:
-        print(
-            f"  Target Humidity:    {h_ctrl.target_humidity_percent} % "
-            f"(Range: {h_ctrl.humidity_range})"
-        )
+        h_ctrl = dev.get_trait(HumidityControlTrait)
+        if h_ctrl and h_ctrl.target_humidity_percent is not None:
+            print(
+                f"  Target Humidity:    {h_ctrl.target_humidity_percent} % "
+                f"(Range: {h_ctrl.humidity_range})"
+            )
 
-    mode_ctrl = dev.get_trait(ModeControlTrait)
-    if mode_ctrl:
-        print(
-            f"  Current Mode:       {mode_ctrl.current_mode} (Options: {mode_ctrl.supported_modes})"
-        )
+        mode_ctrl = dev.get_trait(ModeControlTrait)
+        if mode_ctrl:
+            print(
+                f"  Current Mode:       {mode_ctrl.current_mode} "
+                f"(Options: {mode_ctrl.supported_modes})"
+            )
 
-    tank = dev.get_trait(TankLevelTrait)
-    if tank:
-        print(f"  Tank Full:          {tank.is_tank_full}")
+        tank = dev.get_trait(TankLevelTrait)
+        if tank:
+            print(f"  Tank Full:          {tank.is_tank_full}")
 
-    flags_trait = dev.get_trait(StatusFlagsTrait)
-    if flags_trait:
-        flags = flags_trait.status_flags
-        print(f"  Status Flags:       {', '.join(flags) if flags else 'none'}")
-    print()
+        flags_trait = dev.get_trait(StatusFlagsTrait)
+        if flags_trait:
+            flags = flags_trait.status_flags
+            print(f"  Status Flags:       {', '.join(flags) if flags else 'none'}")
+        print()
+    finally:
+        _close_app(app)
 
 
 def _dp_sort_key(key: str) -> tuple[int, str]:
@@ -143,123 +173,144 @@ def _dp_sort_key(key: str) -> tuple[int, str]:
     return (0, key.zfill(6)) if key.isdigit() else (1, key)
 
 
-def cmd_probe(args):
+def cmd_probe(args: argparse.Namespace) -> None:
     app = get_app(args.config)
-    dev = app.registry.get(args.device_id)
-    if not dev:
-        sys.exit(f"Device '{args.device_id}' not found.")
+    try:
+        dev = app.registry.get(args.device_id)
+        if not dev:
+            sys.exit(f"Device '{args.device_id}' not found.")
 
-    dev.refresh()
-    raw = getattr(dev, "raw_dps", None)
-    if raw is None:
-        sys.exit(f"Device '{dev.name}' does not expose raw data points.")
+        dev.refresh()
+        raw = getattr(dev, "raw_dps", None)
+        if raw is None:
+            sys.exit(f"Device '{dev.name}' does not expose raw data points.")
 
-    print(f"\n--- Raw Data Points: {dev.name} ({dev.id}) ---")
-    for key in sorted(raw, key=_dp_sort_key):
-        print(f"  DP {key:<5}= {raw[key]}")
+        print(f"\n--- Raw Data Points: {dev.name} ({dev.id}) ---")
+        for key in sorted(raw, key=_dp_sort_key):
+            print(f"  DP {key:<5}= {raw[key]}")
 
-    flags_trait = dev.get_trait(StatusFlagsTrait)
-    if flags_trait:
-        flags = flags_trait.status_flags
-        print(f"\n  Status Flags: {', '.join(flags) if flags else 'none'}")
-    print()
+        flags_trait = dev.get_trait(StatusFlagsTrait)
+        if flags_trait:
+            flags = flags_trait.status_flags
+            print(f"\n  Status Flags: {', '.join(flags) if flags else 'none'}")
+        print()
+    finally:
+        _close_app(app)
 
 
-def cmd_set_target(args):
+def cmd_set_target(args: argparse.Namespace) -> None:
     app = get_app(args.config)
-    dev = app.registry.get(args.device_id)
-    if not dev:
-        sys.exit(f"Device '{args.device_id}' not found.")
+    try:
+        dev = app.registry.get(args.device_id)
+        if not dev:
+            sys.exit(f"Device '{args.device_id}' not found.")
 
-    ctrl = dev.get_trait(HumidityControlTrait)
-    if not ctrl:
-        sys.exit(f"Device '{dev.name}' does not support humidity control.")
+        ctrl = dev.get_trait(HumidityControlTrait)
+        if not ctrl:
+            sys.exit(f"Device '{dev.name}' does not support humidity control.")
 
-    target = int(args.humidity)
-    min_h, max_h = ctrl.humidity_range
-    if not (min_h <= target <= max_h):
-        sys.exit(f"Target humidity must be between {min_h}% and {max_h}%.")
+        target = int(args.humidity)
+        min_h, max_h = ctrl.humidity_range
+        if not (min_h <= target <= max_h):
+            sys.exit(f"Target humidity must be between {min_h}% and {max_h}%.")
 
-    step = ctrl.humidity_step
-    if step > 1:
-        snapped = quantize_rh(target, step, min_h, max_h)
-        if snapped != target:
-            print(f"Note: {target}% is not a multiple of the {step}% step; using {snapped}%.")
-            target = snapped
+        step = ctrl.humidity_step
+        if step > 1:
+            snapped = quantize_rh(target, step, min_h, max_h)
+            if snapped != target:
+                print(f"Note: {target}% is not a multiple of the {step}% step; using {snapped}%.")
+                target = snapped
 
-    success = ctrl.set_target_humidity(target)
-    if success:
-        print(f"Set target humidity for '{dev.name}' to {target}%.")
-    else:
-        sys.exit(f"Failed to set target humidity on '{dev.name}'.")
+        success = ctrl.set_target_humidity(target)
+        if success:
+            print(f"Set target humidity for '{dev.name}' to {target}%.")
+        else:
+            sys.exit(f"Failed to set target humidity on '{dev.name}'.")
+    finally:
+        _close_app(app)
 
 
-def cmd_set_mode(args):
+def cmd_set_mode(args: argparse.Namespace) -> None:
     app = get_app(args.config)
-    dev = app.registry.get(args.device_id)
-    if not dev:
-        sys.exit(f"Device '{args.device_id}' not found.")
+    try:
+        dev = app.registry.get(args.device_id)
+        if not dev:
+            sys.exit(f"Device '{args.device_id}' not found.")
 
-    mode_ctrl = dev.get_trait(ModeControlTrait)
-    if not mode_ctrl:
-        sys.exit(f"Device '{dev.name}' does not support mode selection.")
+        mode_ctrl = dev.get_trait(ModeControlTrait)
+        if not mode_ctrl:
+            sys.exit(f"Device '{dev.name}' does not support mode selection.")
 
-    success = mode_ctrl.set_mode(args.mode)
-    if success:
-        print(f"Set operational mode for '{dev.name}' to '{args.mode}'.")
-    else:
-        sys.exit(f"Failed to set mode '{args.mode}' on '{dev.name}'.")
+        success = mode_ctrl.set_mode(args.mode)
+        if success:
+            print(f"Set operational mode for '{dev.name}' to '{args.mode}'.")
+        else:
+            sys.exit(f"Failed to set mode '{args.mode}' on '{dev.name}'.")
+    finally:
+        _close_app(app)
 
 
 def cmd_turn_on(args: argparse.Namespace) -> None:
     app = get_app(args.config)
-    dev = app.registry.get(args.device_id)
-    if not dev:
-        sys.exit(f"Device '{args.device_id}' not found.")
+    try:
+        dev = app.registry.get(args.device_id)
+        if not dev:
+            sys.exit(f"Device '{args.device_id}' not found.")
 
-    on_off = dev.get_trait(OnOffTrait)
-    if not on_off:
-        sys.exit(f"Device '{dev.name}' does not support power on/off.")
+        on_off = dev.get_trait(OnOffTrait)
+        if not on_off:
+            sys.exit(f"Device '{dev.name}' does not support power on/off.")
 
-    success = on_off.turn_on()
-    if success:
-        print(f"Turned ON '{dev.name}'.")
-    else:
-        sys.exit(f"Failed to turn ON '{dev.name}'.")
+        success = on_off.turn_on()
+        if success:
+            print(f"Turned ON '{dev.name}'.")
+        else:
+            sys.exit(f"Failed to turn ON '{dev.name}'.")
+    finally:
+        _close_app(app)
 
 
 def cmd_turn_off(args: argparse.Namespace) -> None:
     app = get_app(args.config)
-    dev = app.registry.get(args.device_id)
-    if not dev:
-        sys.exit(f"Device '{args.device_id}' not found.")
+    try:
+        dev = app.registry.get(args.device_id)
+        if not dev:
+            sys.exit(f"Device '{args.device_id}' not found.")
 
-    on_off = dev.get_trait(OnOffTrait)
-    if not on_off:
-        sys.exit(f"Device '{dev.name}' does not support power on/off.")
+        on_off = dev.get_trait(OnOffTrait)
+        if not on_off:
+            sys.exit(f"Device '{dev.name}' does not support power on/off.")
 
-    success = on_off.turn_off()
-    if success:
-        print(f"Turned OFF '{dev.name}'.")
-    else:
-        sys.exit(f"Failed to turn OFF '{dev.name}'.")
-
-
-def cmd_evaluate(args):
-    app = get_app(args.config)
-    print("\n--- Running Automation Evaluation Cycle ---")
-    logs = app.evaluate_cycle()
-    for entry in logs:
-        print(f"  * {entry}")
-    print()
+        success = on_off.turn_off()
+        if success:
+            print(f"Turned OFF '{dev.name}'.")
+        else:
+            sys.exit(f"Failed to turn OFF '{dev.name}'.")
+    finally:
+        _close_app(app)
 
 
-def cmd_daemon(args):
-    app = get_app(args.config)
-    run_web = not getattr(args, "no_web", False)
-    host = getattr(args, "host", None)
-    port = getattr(args, "port", None)
-    app.start(run_web=run_web, host=host, port=port)
+def cmd_evaluate(args: argparse.Namespace) -> None:
+    app = _build_app(args.config, refresh_on_init=False, persistent_history=True)
+    try:
+        print("\n--- Running Automation Evaluation Cycle ---")
+        logs = app.evaluate_cycle()
+        for entry in logs:
+            print(f"  * {entry}")
+        print()
+    finally:
+        _close_app(app)
+
+
+def cmd_daemon(args: argparse.Namespace) -> None:
+    app = _build_app(args.config, refresh_on_init=True, persistent_history=True)
+    try:
+        run_web = not getattr(args, "no_web", False)
+        host = getattr(args, "host", None)
+        port = getattr(args, "port", None)
+        app.start(run_web=run_web, host=host, port=port)
+    finally:
+        _close_app(app)
 
 
 def cmd_scan_ble(args: argparse.Namespace) -> None:
@@ -326,7 +377,7 @@ def cmd_service_unit(args: argparse.Namespace) -> None:
     print(unit)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Smart Home Platform CLI")
     parser.add_argument("--config", default="config.json", help="Path to configuration file")
     subparsers = parser.add_subparsers(dest="command", required=True)

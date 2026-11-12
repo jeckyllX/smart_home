@@ -285,3 +285,8 @@ def test_config_roundtrip_save_and_load(tmp_path):
     assert loaded.quiet_schedule.all_day_sleep_days == ["sat", "sun"]
     assert loaded.quiet_schedule.exclusion_windows[0].label == "Deep Sleep"
     assert loaded.web.port == 8888
+
+
+def test_config_accepts_secondary_glazing():
+    cfg = SmartHomeConfig.from_dict({"condensation": {"glazing": "secondary"}})
+    assert cfg.condensation.glazing == GlazingType.SECONDARY

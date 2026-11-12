@@ -74,3 +74,85 @@ def test_manual_override_prevents_schedule_and_condensation_changes():
     ok_clear, _ = app.execute_device_command("dh_bed", "clear_override")
     assert ok_clear is True
     assert app.is_device_overridden("dh_bed")[0] is False
+
+
+def test_manual_override_takes_precedence_over_exclusion_window():
+    cfg = SmartHomeConfig.from_dict(
+        {
+            "location": {"latitude": 0.0, "longitude": 0.0, "city": "Test City"},
+            "condensation": {
+                "enabled": True,
+                "target_dew_point_c": 10.0,
+                "manual_override_minutes": 120,
+            },
+            "quiet_schedule": {
+                "enabled": True,
+                "exclusion_windows": [
+                    {
+                        "label": "Night Silence",
+                        "start_time": "00:00",
+                        "end_time": "23:59",
+                        "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                        "rooms": ["bedroom"],
+                        "enabled": True,
+                    }
+                ],
+            },
+        }
+    )
+    app = SmartHomeApplication(cfg, refresh_on_init=False)
+
+    dehum = VirtualDehumidifier(
+        device_id="dh_bed",
+        name="Bedroom Dehumidifier",
+        room="bedroom",
+    )
+    dehum.turn_off()
+    sensor = VirtualClimateSensor(
+        device_id="sensor_bed",
+        name="Bedroom Sensor",
+        room="bedroom",
+        initial_temp=20.0,
+        initial_rh=65.0,
+    )
+    app.registry.register(dehum)
+    app.registry.register(sensor)
+
+    # User manually turns ON the dehumidifier during an active exclusion window
+    ok, _ = app.execute_device_command("dh_bed", "turn_on")
+    assert ok is True
+    assert dehum.is_on is True
+
+    # Both QuietScheduleAutomation and CondensationPreventionAutomation must respect the manual hold
+    now_dt = datetime.fromtimestamp(app._manual_overrides["dh_bed"] - 1800)
+    for auto in app.automations:
+        if isinstance(auto, (QuietScheduleAutomation, CondensationPreventionAutomation)):
+            logs = auto.evaluate(app.registry, app.event_bus, current_dt=now_dt)
+            assert any("MANUAL HOLD" in entry for entry in logs)
+
+    assert dehum.is_on is True
+
+
+def test_update_config_preserves_cooldown_and_alert_state():
+    from smarthome.automations.alerts import HealthAlertAutomation
+
+    cfg = SmartHomeConfig.from_dict(
+        {
+            "location": {"latitude": 0.0, "longitude": 0.0, "city": "Test City"},
+            "condensation": {"enabled": True, "target_dew_point_c": 10.0},
+            "alerts": {"enabled": True},
+        }
+    )
+    app = SmartHomeApplication(cfg, refresh_on_init=False)
+
+    cond_auto = next(a for a in app.automations if isinstance(a, CondensationPreventionAutomation))
+    alert_auto = next(a for a in app.automations if isinstance(a, HealthAlertAutomation))
+    cond_auto._last_power_change["dh_bed"] = 12345.0
+    alert_auto._last_notified["tank_full:dh_bed"] = 67890.0
+
+    app.update_config({"condensation": {"min_target_rh": 45}})
+
+    new_cond = next(a for a in app.automations if isinstance(a, CondensationPreventionAutomation))
+    new_alert = next(a for a in app.automations if isinstance(a, HealthAlertAutomation))
+    assert new_cond._last_power_change.get("dh_bed") == 12345.0
+    assert new_alert._last_notified.get("tank_full:dh_bed") == 67890.0

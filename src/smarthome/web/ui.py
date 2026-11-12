@@ -130,6 +130,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         .badge-warning { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
         .badge-danger { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
         .badge-accent { background: rgba(129, 140, 248, 0.2); color: var(--accent); }
+        .badge-primary { background: rgba(56, 189, 248, 0.2); color: var(--primary); }
+        .badge-secondary { background: rgba(148, 163, 184, 0.2); color: var(--text-muted); }
 
         /* Metrics */
         .metrics-row {
@@ -549,6 +551,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         let currentState = null;
         let roomHistory = {};
 
+        function escapeHtml(str) {
+            if (str == null) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         function toggleAccordion(id) {
             const el = document.getElementById(id);
             el.classList.toggle('open');
@@ -584,8 +596,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             container.style.display = 'flex';
             container.innerHTML = alerts.map(a => `
                 <div class="alert-banner ${a.severity === 'critical' ? 'alert-critical' : 'alert-warning'}">
-                    <span>${a.severity === 'critical' ? '🚨' : '⚠️'} ${a.message}</span>
-                    <span class="badge ${a.severity === 'critical' ? 'badge-danger' : 'badge-warning'}">${a.severity}</span>
+                    <span>${a.severity === 'critical' ? '🚨' : '⚠️'} ${escapeHtml(a.message)}</span>
+                    <span class="badge ${a.severity === 'critical' ? 'badge-danger' : 'badge-warning'}">${escapeHtml(a.severity)}</span>
                 </div>
             `).join('');
         }
@@ -615,12 +627,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const svgX = (relX / rect.width) * W;
             const clampedX = Math.max(PAD_LEFT, Math.min(W - PAD_RIGHT, svgX));
             const ratio = (clampedX - PAD_LEFT) / (W - PAD_LEFT - PAD_RIGHT);
-            const idx = Math.max(0, Math.min(points.length - 1, Math.round(ratio * (points.length - 1))));
+            const minTs = points[0].timestamp;
+            const maxTs = points[points.length - 1].timestamp;
+            const spanTs = Math.max(1, maxTs - minTs);
+            const targetTs = minTs + ratio * spanTs;
+
+            let idx = 0;
+            let bestDiff = Infinity;
+            for (let i = 0; i < points.length; i++) {
+                const diff = Math.abs(points[i].timestamp - targetTs);
+                if (diff < bestDiff) {
+                    bestDiff = diff;
+                    idx = i;
+                }
+            }
+            const snapX = PAD_LEFT + ((points[idx].timestamp - minTs) / spanTs) * (W - PAD_LEFT - PAD_RIGHT);
 
             const curLine = document.getElementById('cursor-line-' + safeId);
             if (curLine) {
-                curLine.setAttribute('x1', clampedX.toFixed(1));
-                curLine.setAttribute('x2', clampedX.toFixed(1));
+                curLine.setAttribute('x1', snapX.toFixed(1));
+                curLine.setAttribute('x2', snapX.toFixed(1));
                 curLine.setAttribute('visibility', 'visible');
             }
             updateInspectBar(safeId, points[idx], false);
@@ -675,8 +701,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 const isOutdoor = room === 'outdoor';
                 let headerHtml = `
                     <div class="card-header">
-                        <span class="room-title">${isOutdoor ? '🌤️ Outdoor Weather' : '📍 ' + room}</span>
-                        ${psycho && psycho.is_excluded ? `<span class="badge badge-danger">Excluded (${psycho.exclusion_label || 'Active'})</span>` : ''}
+                        <span class="room-title">${isOutdoor ? '🌤️ Outdoor Weather' : '📍 ' + escapeHtml(room)}</span>
+                        ${psycho && psycho.is_excluded ? `<span class="badge badge-danger">Excluded (${escapeHtml(psycho.exclusion_label || 'Active')})</span>` : ''}
                     </div>
                 `;
 
@@ -767,7 +793,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             if (rhMax - rhMin < 15) { rhMax = rhMin + 15; }
             const rhMid = Math.round((rhMin + rhMax) / 2);
 
-            const xFor = i => PAD_LEFT + (i / (points.length - 1)) * PLOT_W;
+            const minTs = points[0].timestamp;
+            const maxTs = points[points.length - 1].timestamp;
+            const spanTs = Math.max(1, maxTs - minTs);
+            const xFor = i => PAD_LEFT + ((points[i].timestamp - minTs) / spanTs) * PLOT_W;
             const yRh = v => T1_BOTTOM - ((Math.min(rhMax, Math.max(rhMin, v)) - rhMin) / (rhMax - rhMin)) * T1_HEIGHT;
 
             // Track 2: Temperatures (°C) -> Y: 84 to 154
@@ -896,10 +925,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         ${tempLine ? `<polyline fill="none" stroke="#f43f5e" stroke-width="1.8" points="${tempLine}" />` : ''}
 
                         <!-- Time Axis -->
-                        <text x="${PAD_LEFT}" y="168" fill="#64748b" font-size="7.5" text-anchor="start">-24h</text>
-                        <text x="${PAD_LEFT + PLOT_W * 0.25}" y="168" fill="#64748b" font-size="7.5" text-anchor="middle">-18h</text>
-                        <text x="${PAD_LEFT + PLOT_W * 0.5}" y="168" fill="#64748b" font-size="7.5" text-anchor="middle">-12h</text>
-                        <text x="${PAD_LEFT + PLOT_W * 0.75}" y="168" fill="#64748b" font-size="7.5" text-anchor="middle">-6h</text>
+                        <text x="${PAD_LEFT}" y="168" fill="#64748b" font-size="7.5" text-anchor="start">${new Date(minTs * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</text>
+                        <text x="${PAD_LEFT + PLOT_W * 0.25}" y="168" fill="#64748b" font-size="7.5" text-anchor="middle">${new Date((minTs + spanTs * 0.25) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</text>
+                        <text x="${PAD_LEFT + PLOT_W * 0.5}" y="168" fill="#64748b" font-size="7.5" text-anchor="middle">${new Date((minTs + spanTs * 0.5) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</text>
+                        <text x="${PAD_LEFT + PLOT_W * 0.75}" y="168" fill="#64748b" font-size="7.5" text-anchor="middle">${new Date((minTs + spanTs * 0.75) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</text>
                         <text x="${W - PAD_RIGHT}" y="168" fill="#64748b" font-size="7.5" text-anchor="end">Now</text>
 
                         <!-- Interactive Cursor -->
@@ -912,11 +941,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         function renderDeviceCard(dev, psycho) {
             const isDehum = dev.category === 'dehumidifier';
             const isOnline = dev.is_online;
+            const safeDevId = escapeHtml(dev.id);
 
             let html = `
                 <div style="background: rgba(15,23,42,0.4); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 0.85rem;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                        <strong>${dev.name}</strong>
+                        <strong>${escapeHtml(dev.name)}</strong>
                         <span class="badge ${isOnline ? 'badge-success' : 'badge-danger'}">${isOnline ? 'Online' : 'Offline'}</span>
                     </div>
             `;
@@ -926,9 +956,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             if (dev.temperature_celsius != null) html += `<span>🌡️ ${dev.temperature_celsius.toFixed(1)}°C</span>`;
             if (dev.humidity_percent != null) html += `<span>💧 ${Math.round(dev.humidity_percent)}%</span>`;
             if (dev.battery_percent != null) html += `<span>🔋 ${dev.battery_percent}%</span>`;
-            if (dev.forecast_12h_min != null) html += `<span style="color: var(--primary);">❄️ 12h Min: ${dev.forecast_12h_min.toFixed(1)}°C</span>`;
+            if (dev.forecast_12h_min != null) html += `<span style="color: var(--primary);">❄️ ${dev.forecast_lookahead_hours ?? 12}h Min: ${dev.forecast_12h_min.toFixed(1)}°C</span>`;
             if (dev.is_tank_full) html += `<span class="badge badge-danger">⚠️ TANK FULL</span>`;
-            if (dev.status_flags && dev.status_flags.length) html += `<span style="color: var(--text-muted); font-size: 0.7rem;">Flags: ${dev.status_flags.join(', ')}</span>`;
+            if (dev.status_flags && dev.status_flags.length) html += `<span style="color: var(--text-muted); font-size: 0.7rem;">Flags: ${escapeHtml(dev.status_flags.join(', '))}</span>`;
             html += '</div>';
 
             // Controls for dehumidifiers
@@ -936,13 +966,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 const isOn = dev.is_on;
                 const isHeld = dev.is_overridden;
                 const holdMins = dev.override_remaining_seconds ? Math.max(1, Math.ceil(dev.override_remaining_seconds / 60)) : 0;
+                const targetRh = dev.target_humidity_percent ?? 55;
                 html += `
                     <div class="control-group">
                         <div class="control-row">
                             <span style="font-size: 0.85rem; font-weight: 600;">Power</span>
                             <div style="display: flex; align-items: center; gap: 0.4rem;">
                                 ${isHeld ? `<span class="badge badge-warning">🔒 Hold ${holdMins}m</span>` : ''}
-                                <button class="btn-sm ${isOn ? 'btn-primary' : 'btn-secondary'}" onclick="sendCommand('${dev.id}', '${isOn ? 'turn_off' : 'turn_on'}')">
+                                <button class="btn-sm ${isOn ? 'btn-primary' : 'btn-secondary'}" onclick="sendCommand('${safeDevId}', '${isOn ? 'turn_off' : 'turn_on'}')">
                                     ${isOn ? '⚡ ON' : '⚪ OFF'}
                                 </button>
                             </div>
@@ -950,25 +981,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <div class="control-row">
                             <span style="font-size: 0.85rem; font-weight: 600;">Target RH</span>
                             <div class="range-slider">
-                                <input type="range" min="${dev.humidity_range ? dev.humidity_range[0] : 35}" max="${dev.humidity_range ? dev.humidity_range[1] : 70}" step="${dev.humidity_step || 5}" value="${dev.target_humidity_percent || 55}" onchange="sendCommand('${dev.id}', 'set_target', {humidity: this.value})">
-                                <span style="font-weight: 700; width: 40px; text-align: right;">${dev.target_humidity_percent || 55}%</span>
+                                <input type="range" min="${dev.humidity_range ? dev.humidity_range[0] : 35}" max="${dev.humidity_range ? dev.humidity_range[1] : 70}" step="${dev.humidity_step ?? 5}" value="${targetRh}" onchange="sendCommand('${safeDevId}', 'set_target', {humidity: this.value})">
+                                <span style="font-weight: 700; width: 40px; text-align: right;">${targetRh}%</span>
                             </div>
                         </div>
                         <div class="control-row">
                             <span style="font-size: 0.85rem; font-weight: 600;">Mode</span>
                             <div class="mode-buttons">
                                 ${(dev.supported_modes || ['manual', 'sleep', 'laundry', 'purify']).map(m => `
-                                    <button class="mode-btn ${dev.current_mode === m ? 'active' : ''}" onclick="sendCommand('${dev.id}', 'set_mode', {mode: '${m}'})">${m}</button>
+                                    <button class="mode-btn ${dev.current_mode === m ? 'active' : ''}" onclick="sendCommand('${safeDevId}', 'set_mode', {mode: '${escapeHtml(m)}'})">${escapeHtml(m)}</button>
                                 `).join('')}
                             </div>
                         </div>
                         <div class="control-row">
                             <span style="font-size: 0.8rem; color: var(--text-muted);">Manual Hold</span>
                             <div class="mode-buttons">
-                                <button class="mode-btn" onclick="sendCommand('${dev.id}', 'set_override', {minutes: 60})">1h</button>
-                                <button class="mode-btn" onclick="sendCommand('${dev.id}', 'set_override', {minutes: 120})">2h</button>
-                                <button class="mode-btn" onclick="sendCommand('${dev.id}', 'set_override', {minutes: 240})">4h</button>
-                                ${isHeld ? `<button class="mode-btn active" onclick="sendCommand('${dev.id}', 'clear_override')">Resume Auto</button>` : ''}
+                                <button class="mode-btn" onclick="sendCommand('${safeDevId}', 'set_override', {minutes: 60})">1h</button>
+                                <button class="mode-btn" onclick="sendCommand('${safeDevId}', 'set_override', {minutes: 120})">2h</button>
+                                <button class="mode-btn" onclick="sendCommand('${safeDevId}', 'set_override', {minutes: 240})">4h</button>
+                                ${isHeld ? `<button class="mode-btn active" onclick="sendCommand('${safeDevId}', 'clear_override')">Resume Auto</button>` : ''}
                             </div>
                         </div>
                     </div>
@@ -985,7 +1016,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 consoleEl.innerHTML = '<div class="log-line">No evaluation events logged yet.</div>';
                 return;
             }
-            consoleEl.innerHTML = state.last_evaluation_logs.map(l => `<div class="log-line">${l}</div>`).join('');
+            consoleEl.innerHTML = state.last_evaluation_logs.map(l => `<div class="log-line">${escapeHtml(l)}</div>`).join('');
             if (state.last_evaluation_time) {
                 const d = new Date(state.last_evaluation_time * 1000);
                 document.getElementById('last-eval-time').innerText = 'Last evaluated: ' + d.toLocaleTimeString();
@@ -996,17 +1027,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             if (!cfg) return;
             const c = cfg.condensation || {};
             document.getElementById('cfg-auto-power').checked = c.auto_power !== false;
-            document.getElementById('cfg-min-rh').value = c.min_target_rh || 40;
-            document.getElementById('cfg-max-rh').value = c.max_target_rh || 60;
-            document.getElementById('cfg-on-offset').value = c.turn_on_offset_rh || 2.0;
-            document.getElementById('cfg-off-offset').value = c.turn_off_offset_rh || 2.0;
-            document.getElementById('cfg-min-cycle').value = c.min_cycle_seconds || 600;
-            document.getElementById('cfg-lookahead').value = c.lookahead_hours != null ? c.lookahead_hours : 12;
+            document.getElementById('cfg-min-rh').value = c.min_target_rh ?? 40;
+            document.getElementById('cfg-max-rh').value = c.max_target_rh ?? 60;
+            document.getElementById('cfg-on-offset').value = c.turn_on_offset_rh ?? 2.0;
+            document.getElementById('cfg-off-offset').value = c.turn_off_offset_rh ?? 2.0;
+            document.getElementById('cfg-min-cycle').value = c.min_cycle_seconds ?? 600;
+            document.getElementById('cfg-lookahead').value = c.lookahead_hours ?? 12;
             document.getElementById('cfg-glazing').value = c.glazing || 'double';
-            document.getElementById('cfg-override-mins').value = c.manual_override_minutes != null ? c.manual_override_minutes : 120;
+            document.getElementById('cfg-override-mins').value = c.manual_override_minutes ?? 120;
 
             const a = cfg.alerts || {};
-            document.getElementById('cfg-low-batt').value = a.low_battery_threshold_percent != null ? a.low_battery_threshold_percent : 20;
+            document.getElementById('cfg-low-batt').value = a.low_battery_threshold_percent ?? 20;
             document.getElementById('cfg-webhook-url').value = a.webhook_url || '';
 
             const s = cfg.quiet_schedule || {};
@@ -1037,10 +1068,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td><input type="checkbox" class="ex-enabled" ${win.enabled ? 'checked' : ''}></td>
-                    <td><input type="text" class="ex-label" value="${win.label || ''}" style="width: 120px;"></td>
+                    <td><input type="text" class="ex-label" value="${escapeHtml(win.label || '')}" style="width: 120px;"></td>
                     <td>
-                        <input type="text" class="ex-start" value="${win.start_time || '00:00'}" style="width: 65px;"> - 
-                        <input type="text" class="ex-end" value="${win.end_time || '07:00'}" style="width: 65px;">
+                        <input type="text" class="ex-start" value="${escapeHtml(win.start_time || '00:00')}" style="width: 65px;"> - 
+                        <input type="text" class="ex-end" value="${escapeHtml(win.end_time || '07:00')}" style="width: 65px;">
                     </td>
                     <td>
                         <div class="days-selector">
@@ -1051,7 +1082,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             `).join('')}
                         </div>
                     </td>
-                    <td><input type="text" class="ex-rooms" value="${win.rooms ? win.rooms.join(', ') : ''}" placeholder="All rooms" style="width: 100px;"></td>
+                    <td><input type="text" class="ex-rooms" value="${win.rooms ? escapeHtml(win.rooms.join(', ')) : ''}" placeholder="All rooms" style="width: 100px;"></td>
                     <td><button type="button" class="btn-danger btn-sm" onclick="this.closest('tr').remove()">Remove</button></td>
                 `;
                 tbody.appendChild(tr);

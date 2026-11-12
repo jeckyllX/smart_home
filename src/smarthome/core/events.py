@@ -56,7 +56,7 @@ class CommandDispatchedEvent(Event):
 class EventBus:
     """Thread-safe event distributor."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.RLock()
         self._subscribers: dict[type[Event], list[Callable[[Any], None]]] = {}
         self._global_subscribers: list[Callable[[Event], None]] = []

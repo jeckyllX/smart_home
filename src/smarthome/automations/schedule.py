@@ -92,8 +92,18 @@ class QuietScheduleAutomation(Automation):
         # 1. Enforce active exclusion windows on OnOff devices
         power_devices = registry.find_devices_with_trait(OnOffTrait)
         for dev in power_devices:
+            if not dev.is_online:
+                continue
             is_excluded, window = self.is_room_excluded(dev.room, now)
             if is_excluded and window is not None:
+                if self.override_checker:
+                    is_held, rem_sec = self.override_checker(dev.id, now.timestamp())
+                    if is_held:
+                        logs.append(
+                            f"Room '{dev.room}': {dev.name} exclusion '{window.label}' skipped "
+                            f"[MANUAL HOLD: {max(1, rem_sec // 60)}m remaining]."
+                        )
+                        continue
                 on_off_trait = dev.require_trait(OnOffTrait)
                 if on_off_trait.is_on:
                     success = on_off_trait.turn_off()
@@ -125,6 +135,8 @@ class QuietScheduleAutomation(Automation):
         # 3. Synchronize operational mode
         mode_devices = registry.find_devices_with_trait(ModeControlTrait)
         for dev in mode_devices:
+            if not dev.is_online:
+                continue
             if self.rooms and dev.room.lower() not in [r.lower() for r in self.rooms]:
                 continue
 

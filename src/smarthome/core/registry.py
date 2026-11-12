@@ -17,7 +17,7 @@ T = TypeVar("T")
 class DeviceRegistry:
     """Thread-safe registry for smart devices."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.RLock()
         self._devices: dict[str, Device] = {}
 

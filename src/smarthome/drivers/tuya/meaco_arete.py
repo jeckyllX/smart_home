@@ -135,29 +135,30 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
         if not self.event_bus:
             return
 
-        # Power change
-        if old_dps.get(self.DP_POWER) != new_dps.get(self.DP_POWER):
-            self.event_bus.publish(
-                DeviceStateChangedEvent(
-                    device_id=self.id,
-                    trait_name="OnOffTrait",
-                    property_name="is_on",
-                    old_value=old_dps.get(self.DP_POWER),
-                    new_value=new_dps.get(self.DP_POWER),
+        if old_dps:
+            # Power change
+            if old_dps.get(self.DP_POWER) != new_dps.get(self.DP_POWER):
+                self.event_bus.publish(
+                    DeviceStateChangedEvent(
+                        device_id=self.id,
+                        trait_name="OnOffTrait",
+                        property_name="is_on",
+                        old_value=old_dps.get(self.DP_POWER),
+                        new_value=new_dps.get(self.DP_POWER),
+                    )
                 )
-            )
 
-        # Mode change
-        if old_dps.get(self.DP_MODE) != new_dps.get(self.DP_MODE):
-            self.event_bus.publish(
-                DeviceStateChangedEvent(
-                    device_id=self.id,
-                    trait_name="ModeControlTrait",
-                    property_name="current_mode",
-                    old_value=old_dps.get(self.DP_MODE),
-                    new_value=new_dps.get(self.DP_MODE),
+            # Mode change
+            if old_dps.get(self.DP_MODE) != new_dps.get(self.DP_MODE):
+                self.event_bus.publish(
+                    DeviceStateChangedEvent(
+                        device_id=self.id,
+                        trait_name="ModeControlTrait",
+                        property_name="current_mode",
+                        old_value=old_dps.get(self.DP_MODE),
+                        new_value=new_dps.get(self.DP_MODE),
+                    )
                 )
-            )
 
         # Humidity Telemetry
         cur_rh = new_dps.get(self.DP_CURRENT_HUMIDITY)

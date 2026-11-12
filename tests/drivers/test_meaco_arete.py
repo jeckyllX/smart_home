@@ -47,3 +47,29 @@ def test_humidity_range_and_step():
 def test_missing_status_dp_is_empty():
     dev = _device()
     assert dev.status_flags == ()
+
+
+def test_initial_refresh_does_not_emit_state_changed_events():
+    from smarthome.core.events import DeviceStateChangedEvent, EventBus
+
+    bus = EventBus()
+    state_events: list[DeviceStateChangedEvent] = []
+    bus.subscribe(DeviceStateChangedEvent, state_events.append)
+
+    dev = MeacoAreteTuyaDevice(
+        device_id="dev_1",
+        name="Test Unit",
+        ip="192.0.2.1",
+        local_key="1234567890123456",
+        event_bus=bus,
+    )
+
+    # Initial population from empty cache should not emit state-change events
+    dev._dispatch_changes({}, {"1": False, "4": "manual", "16": 55})
+    assert len(state_events) == 0
+
+    # Subsequent change from populated cache emits DeviceStateChangedEvent
+    dev._dispatch_changes({"1": False, "4": "manual"}, {"1": True, "4": "manual"})
+    assert len(state_events) == 1
+    assert state_events[0].property_name == "is_on"
+    assert state_events[0].new_value is True

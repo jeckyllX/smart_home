@@ -622,3 +622,46 @@ def test_compute_room_status_without_dehumidifier():
     assert status["safe_target_rh"] is not None
     assert status["cooldown_remaining_seconds"] == 0.0
     assert status["is_overridden"] is False
+
+
+def test_offline_sensor_ignored_and_offline_dehumidifier_skipped():
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    offline_sensor = VirtualClimateSensor(
+        device_id="bed_offline",
+        name="Offline Sensor",
+        room="bedroom",
+        initial_temp=10.0,
+        initial_rh=90.0,
+    )
+    offline_sensor._online = False
+    online_sensor = VirtualClimateSensor(
+        device_id="bed_online",
+        name="Online Sensor",
+        room="bedroom",
+        initial_temp=20.0,
+        initial_rh=55.0,
+    )
+    dehumidifier = _room_dehumidifier(target_rh=55)
+    dehumidifier.room = "bedroom"
+    registry.register(offline_sensor)
+    registry.register(online_sensor)
+    registry.register(dehumidifier)
+
+    automation = _living_room_automation(target_dew_point_c=10.0)
+    logs = automation.evaluate(registry, event_bus)
+
+    # Should use online sensor (20.0C / 55%), NOT offline sensor (10.0C / 90%)
+    assert any("In=20.0°C/55%RH" in line for line in logs)
+
+    # Offline dehumidifier is skipped
+    class _OfflineDehum(VirtualDehumidifier):
+        @property
+        def is_online(self) -> bool:
+            return False
+
+    reg2 = DeviceRegistry()
+    reg2.register(_OfflineDehum(device_id="dh_off", name="Offline Dehum", room="bedroom"))
+    logs2 = automation.evaluate(reg2, event_bus)
+    assert any("is offline. Skipping adjustment." in line for line in logs2)

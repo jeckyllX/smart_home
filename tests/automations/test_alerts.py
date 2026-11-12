@@ -86,3 +86,23 @@ def test_health_alerts_tank_full_and_low_battery_and_webhook_cooldown():
     auto.evaluate(registry, bus, now_ts=5000.0)
     assert len(auto.active_alerts) == 1
     assert auto.active_alerts[0]["key"] == "low_battery:tp_bed"
+
+
+def test_health_alerts_offline_device():
+    registry = DeviceRegistry()
+    bus = EventBus()
+
+    offline_sensor = VirtualClimateSensor(
+        device_id="tp_offline",
+        name="Offline Sensor",
+        room="bedroom",
+    )
+    offline_sensor._online = False
+    registry.register(offline_sensor)
+
+    auto = HealthAlertAutomation()
+    logs = auto.evaluate(registry, bus, now_ts=1000.0)
+    assert len(auto.active_alerts) == 1
+    assert auto.active_alerts[0]["key"] == "offline:tp_offline"
+    assert auto.active_alerts[0]["severity"] == "warning"
+    assert any("offline" in line.lower() for line in logs)

@@ -141,6 +141,17 @@ class SmartHomeApplication:
 
     def _setup_automations(self) -> None:
         with self._lock:
+            # Preserve runtime cooldown/alert state across config reloads
+            prev_power_change: dict[str, float] = {}
+            prev_last_notified: dict[str, float] = {}
+            prev_active_alerts = []
+            for existing in self.automations:
+                if isinstance(existing, CondensationPreventionAutomation):
+                    prev_power_change = dict(existing._last_power_change)
+                elif isinstance(existing, HealthAlertAutomation):
+                    prev_last_notified = dict(existing._last_notified)
+                    prev_active_alerts = list(existing._active_alerts)
+
             self.automations.clear()
 
             # 1. Quiet Hours / Day-of-Week / Exclusion Schedule
@@ -179,6 +190,7 @@ class SmartHomeApplication:
                     exclusion_checker=(schedule_auto.is_room_excluded if schedule_auto else None),
                     override_checker=self.is_device_overridden,
                 )
+                condensation_auto._last_power_change = prev_power_change
                 self.automations.append(condensation_auto)
 
             # 3. Health, Tank-Full & Low-Battery Alerts
@@ -189,6 +201,8 @@ class SmartHomeApplication:
                     webhook_url=a_cfg.webhook_url,
                     webhook_cooldown_minutes=a_cfg.webhook_cooldown_minutes,
                 )
+                alert_auto._last_notified = prev_last_notified
+                alert_auto._active_alerts = prev_active_alerts
                 self.automations.append(alert_auto)
 
     def evaluate_cycle(self) -> list[str]:
@@ -263,6 +277,7 @@ class SmartHomeApplication:
 
     def update_config(self, updated_dict: dict[str, Any]) -> None:
         """Apply modified configuration, persist to disk, and reconfigure automations."""
+        weather_to_refresh: OpenMeteoWeatherDevice | None = None
         with self._lock:
             # Merge updated_dict onto current config to preserve unedited keys
             merged = self.config.to_dict()
@@ -272,6 +287,7 @@ class SmartHomeApplication:
                 else:
                     merged[k] = v
 
+            prev_loc = self.config.location
             raw_path = self.config.raw_path
             new_cfg = SmartHomeConfig.from_dict(merged)
             new_cfg.raw_path = raw_path
@@ -282,10 +298,16 @@ class SmartHomeApplication:
             # Update live weather station if location changed
             weather_dev = self.registry.get("weather_outdoor")
             if isinstance(weather_dev, OpenMeteoWeatherDevice):
+                loc_changed = (
+                    weather_dev.latitude != new_cfg.location.latitude
+                    or weather_dev.longitude != new_cfg.location.longitude
+                    or prev_loc.city != new_cfg.location.city
+                )
                 weather_dev.latitude = new_cfg.location.latitude
                 weather_dev.longitude = new_cfg.location.longitude
                 weather_dev.name = f"Weather Station ({new_cfg.location.city})"
-                weather_dev.refresh(force=True)
+                if loc_changed:
+                    weather_to_refresh = weather_dev
 
             if self.config.raw_path:
                 try:
@@ -294,8 +316,12 @@ class SmartHomeApplication:
                 except Exception as e:
                     logger.error("Failed to save config to disk: %s", e)
 
-            # Run immediate evaluation pass with new rules
-            self.evaluate_cycle()
+        # Perform network/hardware I/O outside self._lock
+        if weather_to_refresh is not None:
+            weather_to_refresh.refresh(force=True)
+
+        # Run immediate evaluation pass with new rules
+        self.evaluate_cycle()
 
     def execute_device_command(
         self, device_id: str, action: str, **kwargs: Any
@@ -390,6 +416,7 @@ class SmartHomeApplication:
                     alert_auto = auto
 
             now_ts = time.time()
+            lookahead_h = max(1, self.config.condensation.lookahead_hours or 12)
             for dev in self.registry.all_devices():
                 room = dev.room
                 if room not in devices_by_room:
@@ -424,8 +451,9 @@ class SmartHomeApplication:
                     "battery_percent": batt.battery_percent if batt else None,
                     "status_flags": list(flags.status_flags) if flags else [],
                     "forecast_12h_min": (
-                        t_forecast.min_forecast_temperature(12) if t_forecast else None
+                        t_forecast.min_forecast_temperature(lookahead_h) if t_forecast else None
                     ),
+                    "forecast_lookahead_hours": lookahead_h if t_forecast else None,
                     "is_overridden": is_overridden,
                     "override_remaining_seconds": override_rem,
                 }
@@ -520,6 +548,7 @@ class SmartHomeApplication:
         self._running = False
         if self._web_server:
             self._web_server.stop()
+        self.history_store.close()
 
     def _register_signals(self) -> None:
         def handle_signal(sig, frame):

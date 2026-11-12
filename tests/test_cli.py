@@ -179,6 +179,35 @@ def test_cli_device_subcommands(monkeypatch, capsys):
     assert "Turned OFF 'LR Dehumidifier'." in out
 
 
+def test_cli_evaluate_does_not_double_refresh(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        '{"location": {"latitude": 0.0, "longitude": 0.0, "city": "Test"}}',
+        encoding="utf-8",
+    )
+    called_with: list[tuple[bool, bool]] = []
+
+    class _MockApp:
+        def evaluate_cycle(self):
+            return ["ok"]
+
+        class _Store:
+            def close(self):
+                pass
+
+        history_store = _Store()
+
+    def fake_build(
+        config_path: str, *, refresh_on_init: bool = False, persistent_history: bool = False
+    ):
+        called_with.append((refresh_on_init, persistent_history))
+        return _MockApp()
+
+    monkeypatch.setattr(cli, "_build_app", fake_build)
+    cli.cmd_evaluate(argparse.Namespace(config=str(cfg_path)))
+    assert called_with == [(False, True)]
+
+
 def test_cli_service_unit(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["smarthome", "service-unit", "--user", "pi", "--port", "9000"])
     cli.main()

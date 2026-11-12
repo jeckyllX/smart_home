@@ -96,3 +96,9 @@ def test_quantize_rh_snaps_to_step_and_clamps():
     assert quantize_rh(10, 5, 35, 70) == 35
     assert quantize_rh(100, 5, 35, 70) == 70
     assert quantize_rh(52, 1, 35, 70) == 52
+
+
+def test_secondary_glazing_temperature_drop():
+    # 20°C indoor, 0°C outdoor, secondary glazing (factor 0.35) -> glass 13.0°C
+    assert estimate_interior_glass_temp(20.0, 0.0, GlazingType.SECONDARY) == 13.0
+    assert resolve_safe_dew_point(20.0, 0.0, GlazingType.SECONDARY, 1.5) == 11.5

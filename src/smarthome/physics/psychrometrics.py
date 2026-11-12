@@ -14,6 +14,7 @@ MAGNUS_B = 237.7  # in degrees Celsius
 
 class GlazingType(str, Enum):
     SINGLE = "single"
+    SECONDARY = "secondary"
     DOUBLE = "double"
     TRIPLE = "triple"
 
@@ -21,10 +22,11 @@ class GlazingType(str, Enum):
     def temperature_drop_factor(self) -> float:
         """
         Fractional temperature gradient from interior air to interior window glass.
-        Single pane: ~0.50, Double pane: ~0.25, Triple pane: ~0.15.
+        Single pane: ~0.50, Secondary: ~0.35, Double pane: ~0.25, Triple pane: ~0.15.
         """
         factors = {
             GlazingType.SINGLE: 0.50,
+            GlazingType.SECONDARY: 0.35,
             GlazingType.DOUBLE: 0.25,
             GlazingType.TRIPLE: 0.15,
         }

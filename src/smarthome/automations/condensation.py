@@ -229,6 +229,10 @@ class CondensationPreventionAutomation(Automation):
 
         for dehum_dev in dehumidifiers:
             room = dehum_dev.room
+            if not dehum_dev.is_online:
+                logs.append(f"Room '{room}': {dehum_dev.name} is offline. Skipping adjustment.")
+                continue
+
             control_trait = dehum_dev.require_trait(HumidityControlTrait)
 
             # Check exclusion window first
@@ -293,17 +297,17 @@ class CondensationPreventionAutomation(Automation):
             if climate.rh_from_builtin:
                 log_entry += " [humidity from built-in sensor, reads high]"
 
-            if is_excluded:
-                log_entry += f" [EXCLUDED: '{ex_label}' - power blocked]"
-                logs.append(log_entry)
-                continue
-
             if self.override_checker:
                 is_held, rem_sec = self.override_checker(dehum_dev.id, now_ts)
                 if is_held:
                     log_entry += f" [MANUAL HOLD: {max(1, rem_sec // 60)}m remaining]"
                     logs.append(log_entry)
                     continue
+
+            if is_excluded:
+                log_entry += f" [EXCLUDED: '{ex_label}' - power blocked]"
+                logs.append(log_entry)
+                continue
 
             # 5. Target setpoint adjustment (with deadband)
             within_deadband = (
@@ -373,6 +377,8 @@ class CondensationPreventionAutomation(Automation):
         forecast_min: float | None = None
 
         for dev in outdoor_devices:
+            if not dev.is_online:
+                continue
             if current_temp is None:
                 sensor = dev.get_trait(TemperatureSensorTrait)
                 if sensor and sensor.temperature_celsius is not None:
@@ -409,6 +415,8 @@ class CondensationPreventionAutomation(Automation):
         # Prefer dedicated climate sensors in the room over the dehumidifier's own.
         for dev in registry.get_by_room(room):
             if fallback_dehumidifier and dev.id == fallback_dehumidifier.id:
+                continue
+            if not dev.is_online:
                 continue
             t_trait = dev.get_trait(TemperatureSensorTrait)
             h_trait = dev.get_trait(HumiditySensorTrait)

@@ -125,9 +125,24 @@ class HealthAlertAutomation(Automation):
                 alerts.append(alert)
                 logs.append(f"[ALERT: WARNING] {alert.message}")
 
+        # 3. Check device connectivity
+        for dev in registry.all_devices():
+            if not dev.is_online:
+                alert = HealthAlert(
+                    key=f"offline:{dev.id}",
+                    severity="warning",
+                    device_id=dev.id,
+                    device_name=dev.name,
+                    room=dev.room,
+                    message=f"{dev.name} ({dev.room}): Device is offline or unreachable.",
+                    timestamp=ts,
+                )
+                alerts.append(alert)
+                logs.append(f"[ALERT: WARNING] {alert.message}")
+
         self._active_alerts = alerts
 
-        # 3. Dispatch webhook notifications for newly triggered / cooldown-expired alerts
+        # 4. Dispatch webhook notifications for newly triggered / cooldown-expired alerts
         if self.webhook_url and alerts:
             for alert in alerts:
                 last_sent = self._last_notified.get(alert.key)
