@@ -682,7 +682,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const safeStr = pt.safe_dew_point_c != null ? `${pt.safe_dew_point_c.toFixed(1)}°C` : '--';
 
             let html = `<span><strong>${tag}:</strong> 🌡️ <span style="color:#f43f5e;font-weight:700;">${tStr}</span> | 💧 <span style="color:#38bdf8;font-weight:700;">${rhStr} RH</span> | 💧 DewPt: <span style="color:#818cf8;font-weight:700;">${dpStr}</span> (Window Limit: <span style="color:#f59e0b;font-weight:700;">${safeStr}</span>)</span>`;
-            if (pt.is_on != null) {
+            if (pt.is_defrost) {
+                html += `<span class="badge" style="font-size:0.65rem;background:rgba(168,85,247,0.22);color:#d8b4fe;border:1px solid rgba(168,85,247,0.45);">❄️ Defrost</span>`;
+            } else if (pt.is_on != null) {
                 html += `<span class="badge ${pt.is_on ? 'badge-primary' : 'badge-secondary'}" style="font-size:0.65rem;">${pt.is_on ? '⚡ ON' : '⚪ OFF'}</span>`;
             }
             bar.innerHTML = html;
@@ -836,12 +838,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 rhArea = `<polygon points="${PAD_LEFT},${T1_BOTTOM} ${rhLine} ${W - PAD_RIGHT},${T1_BOTTOM}" fill="url(#rhGrad-${safeId})" />`;
             }
 
-            // Power ON bars
+            // Power ON & Defrost bars
             let onBars = '';
             let hasPowerData = false;
+            let hasDefrostData = false;
             const barW = Math.max(1.5, PLOT_W / points.length);
             points.forEach((p, i) => {
-                if (p.is_on) {
+                if (p.is_defrost) {
+                    hasPowerData = true;
+                    hasDefrostData = true;
+                    onBars += `<rect x="${xFor(i).toFixed(1)}" y="${T1_TOP}" width="${barW.toFixed(1)}" height="${T1_HEIGHT}" fill="rgba(168, 85, 247, 0.28)" />`;
+                } else if (p.is_on) {
                     hasPowerData = true;
                     onBars += `<rect x="${xFor(i).toFixed(1)}" y="${T1_TOP}" width="${barW.toFixed(1)}" height="${T1_HEIGHT}" fill="rgba(56, 189, 248, 0.18)" />`;
                 }
@@ -873,6 +880,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             <span class="chart-legend-item"><span style="color: #818cf8;">━</span> Dew Point</span>
                             <span class="chart-legend-item"><span style="color: #f59e0b;">┅</span> Window Limit</span>
                             ${hasPowerData ? `<span class="chart-legend-item"><span style="color: rgba(56, 189, 248, 0.9);">█</span> ON</span>` : ''}
+                            ${hasDefrostData ? `<span class="chart-legend-item"><span style="color: rgba(168, 85, 247, 0.95);">█</span> Defrost</span>` : ''}
                         </div>
                     </div>
 
@@ -882,7 +890,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                     <div class="chart-inspect-bar" id="chart-inspect-${safeId}">
                         <span><strong>Latest (${latestTime}):</strong> 🌡️ <span style="color:#f43f5e;font-weight:700;">${latestT}</span> | 💧 <span style="color:#38bdf8;font-weight:700;">${latestRh} RH</span> | 💧 DewPt: <span style="color:#818cf8;font-weight:700;">${latestDp}</span> (Window Limit: <span style="color:#f59e0b;font-weight:700;">${latestSafe}</span>)</span>
-                        ${latest.is_on != null ? `<span class="badge ${latest.is_on ? 'badge-primary' : 'badge-secondary'}" style="font-size:0.65rem;">${latest.is_on ? '⚡ ON' : '⚪ OFF'}</span>` : ''}
+                        ${latest.is_defrost ? `<span class="badge" style="font-size:0.65rem;background:rgba(168,85,247,0.22);color:#d8b4fe;border:1px solid rgba(168,85,247,0.45);">❄️ Defrost</span>` : (latest.is_on != null ? `<span class="badge ${latest.is_on ? 'badge-primary' : 'badge-secondary'}" style="font-size:0.65rem;">${latest.is_on ? '⚡ ON' : '⚪ OFF'}</span>` : '')}
                     </div>
 
                     <svg id="chart-svg-${safeId}" viewBox="0 0 ${W} ${H}" width="100%" height="176" style="display: block; cursor: crosshair; user-select: none;" onmousemove="onChartHover(event, '${safeId}')" onmouseleave="onChartLeave('${safeId}')" ontouchmove="onChartTouch(event, '${safeId}')" ontouchend="onChartLeave('${safeId}')">

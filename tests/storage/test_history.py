@@ -100,3 +100,49 @@ def test_telemetry_store_event_bus_and_pruning():
     assert remaining[0]["indoor_temp_c"] == 20.0
 
     store.close()
+
+
+def test_telemetry_store_defrost_and_migration(tmp_path: Path):
+    import sqlite3
+
+    db_file = tmp_path / "legacy.db"
+    # Create a legacy room_history table without the is_defrost column
+    conn = sqlite3.connect(db_file)
+    conn.execute(
+        """
+        CREATE TABLE room_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            room TEXT NOT NULL,
+            indoor_temp_c REAL,
+            indoor_rh REAL,
+            outdoor_temp_c REAL,
+            dew_point_c REAL,
+            safe_dew_point_c REAL,
+            target_rh INTEGER,
+            is_on INTEGER
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO room_history (timestamp, room, indoor_temp_c, is_on) "
+        "VALUES (1700000000.0, 'bedroom', 18.5, 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    store = TelemetryStore(db_path=db_file, retention_days=7)
+    store.record_room_snapshot(
+        room="bedroom",
+        status={"indoor_temp_c": 18.6, "indoor_rh_percent": 58.0},
+        is_on=True,
+        is_defrost=True,
+        timestamp=1_700_000_060.0,
+    )
+
+    points = store.get_room_history("bedroom", hours=24.0, now_ts=1_700_000_120.0)
+    assert len(points) == 2
+    assert points[0]["is_defrost"] is None
+    assert points[1]["is_on"] is True
+    assert points[1]["is_defrost"] is True
+    store.close()

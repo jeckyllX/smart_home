@@ -56,10 +56,14 @@ class TelemetryStore:
                     dew_point_c REAL,
                     safe_dew_point_c REAL,
                     target_rh INTEGER,
-                    is_on INTEGER
+                    is_on INTEGER,
+                    is_defrost INTEGER
                 );
                 """
             )
+            cols = {row[1] for row in cur.execute("PRAGMA table_info(room_history)").fetchall()}
+            if "is_defrost" not in cols:
+                cur.execute("ALTER TABLE room_history ADD COLUMN is_defrost INTEGER;")
             cur.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_room_history_room_ts
@@ -147,11 +151,13 @@ class TelemetryStore:
         room: str,
         status: dict[str, Any],
         is_on: bool | None = None,
+        is_defrost: bool | None = None,
         timestamp: float | None = None,
     ) -> None:
         """Record a periodic room climate and psychrometric snapshot."""
         ts = timestamp if timestamp is not None else time.time()
         is_on_int = None if is_on is None else (1 if is_on else 0)
+        is_defrost_int = None if is_defrost is None else (1 if is_defrost else 0)
 
         with self._lock:
             self._conn.execute(
@@ -159,8 +165,8 @@ class TelemetryStore:
                 INSERT INTO room_history (
                     timestamp, room, indoor_temp_c, indoor_rh,
                     outdoor_temp_c, dew_point_c, safe_dew_point_c,
-                    target_rh, is_on
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    target_rh, is_on, is_defrost
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts,
@@ -172,6 +178,7 @@ class TelemetryStore:
                     status.get("safe_dew_point_c"),
                     status.get("safe_target_rh"),
                     is_on_int,
+                    is_defrost_int,
                 ),
             )
             self._conn.commit()
@@ -199,7 +206,7 @@ class TelemetryStore:
             cur = self._conn.execute(
                 """
                 SELECT timestamp, indoor_temp_c, indoor_rh, outdoor_temp_c,
-                       dew_point_c, safe_dew_point_c, target_rh, is_on
+                       dew_point_c, safe_dew_point_c, target_rh, is_on, is_defrost
                 FROM room_history
                 WHERE room = ? AND timestamp >= ?
                 ORDER BY timestamp ASC
@@ -218,6 +225,7 @@ class TelemetryStore:
                 "safe_dew_point_c": r["safe_dew_point_c"],
                 "target_rh": r["target_rh"],
                 "is_on": None if r["is_on"] is None else bool(r["is_on"]),
+                "is_defrost": None if r["is_defrost"] is None else bool(r["is_defrost"]),
             }
             for r in rows
         ]

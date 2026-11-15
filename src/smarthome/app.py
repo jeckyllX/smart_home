@@ -264,10 +264,15 @@ class SmartHomeApplication:
                         r_status = cond_auto.compute_room_status(self.registry, room, dehum)
                         on_off = dehum.get_trait(OnOffTrait) if dehum else None
                         is_on = on_off.is_on if on_off else None
+                        flags = dehum.get_trait(StatusFlagsTrait) if dehum else None
+                        is_defrost = (
+                            ("defrost" in flags.status_flags) if flags is not None else None
+                        )
                         self.history_store.record_room_snapshot(
                             room=room,
                             status=r_status,
                             is_on=is_on,
+                            is_defrost=is_defrost,
                             timestamp=now_ts,
                         )
                     except Exception as e:
