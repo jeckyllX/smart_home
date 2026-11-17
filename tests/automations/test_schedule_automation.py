@@ -15,6 +15,7 @@ def test_quiet_hours_switches_to_sleep_at_night():
     event_bus = EventBus()
 
     dehum = VirtualDehumidifier(device_id="dh_bedroom", name="Bedroom Unit", room="bedroom")
+    dehum.turn_on()
     dehum.set_mode("manual")
     registry.register(dehum)
 
@@ -75,6 +76,7 @@ def test_all_day_sleep_days_keeps_sleep_mode_during_daytime():
     event_bus = EventBus()
 
     dehum = VirtualDehumidifier(device_id="dh_bedroom", name="Bedroom Unit", room="bedroom")
+    dehum.turn_on()
     dehum.set_mode("manual")
     registry.register(dehum)
 
@@ -96,6 +98,7 @@ def test_night_days_filter():
     event_bus = EventBus()
 
     dehum = VirtualDehumidifier(device_id="dh_bedroom", name="Bedroom Unit", room="bedroom")
+    dehum.turn_on()
     dehum.set_mode("manual")
     registry.register(dehum)
 
@@ -112,3 +115,59 @@ def test_night_days_filter():
 
     # Because Sunday is not in night_days, it should remain in day_mode ("manual")
     assert dehum.current_mode == "manual"
+
+
+def test_schedule_skips_mode_sync_when_device_is_off():
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    dehum = VirtualDehumidifier(device_id="dh_bedroom", name="Bedroom Unit", room="bedroom")
+    dehum.turn_off()
+    dehum.set_mode("manual")
+    assert dehum.is_on is False
+    registry.register(dehum)
+
+    automation = QuietScheduleAutomation(
+        start_time="23:00",
+        end_time="08:00",
+        night_mode="sleep",
+        day_mode="manual",
+    )
+
+    night_time = datetime(2026, 10, 16, 23, 0)
+    automation.evaluate(registry, event_bus, current_dt=night_time)
+    assert dehum.current_mode == "manual"
+
+
+def test_exclusion_switches_to_day_mode_before_turning_off():
+    from smarthome.config.schema import ExclusionWindowConfig
+
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    dehum = VirtualDehumidifier(device_id="dh_bedroom", name="Bedroom Unit", room="bedroom")
+    dehum.turn_on()
+    dehum.set_mode("sleep")
+    registry.register(dehum)
+
+    exclusion = ExclusionWindowConfig(
+        label="Daytime Peak",
+        start_time="08:00",
+        end_time="23:00",
+        days=["fri"],
+        enabled=True,
+    )
+    automation = QuietScheduleAutomation(
+        start_time="23:00",
+        end_time="08:00",
+        night_mode="sleep",
+        day_mode="manual",
+        exclusion_windows=[exclusion],
+    )
+
+    # 2026-10-16 is a Friday at 08:01 (just after night window ends at 08:00)
+    morning_time = datetime(2026, 10, 16, 8, 1)
+    automation.evaluate(registry, event_bus, current_dt=morning_time)
+
+    assert dehum.current_mode == "manual"
+    assert dehum.is_on is False

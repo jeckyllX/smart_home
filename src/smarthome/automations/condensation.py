@@ -20,6 +20,7 @@ from smarthome.core.registry import DeviceRegistry
 from smarthome.core.traits import (
     HumidityControlTrait,
     HumiditySensorTrait,
+    ModeControlTrait,
     OnOffTrait,
     TankLevelTrait,
     TemperatureForecastTrait,
@@ -310,11 +311,14 @@ class CondensationPreventionAutomation(Automation):
                 continue
 
             # 5. Target setpoint adjustment (with deadband)
+            mode_trait = dehum_dev.get_trait(ModeControlTrait)
             within_deadband = (
                 current_target is not None and abs(raw_safe_rh - current_target) < self.rh_deadband
             )
             if within_deadband:
                 log_entry += f" [within deadband {self.rh_deadband}%]"
+            elif mode_trait is not None and mode_trait.current_mode == "sleep":
+                log_entry += " [target locked in sleep mode]"
             elif safe_target_rh != current_target:
                 success = control_trait.set_target_humidity(safe_target_rh)
                 if success:

@@ -665,3 +665,46 @@ def test_offline_sensor_ignored_and_offline_dehumidifier_skipped():
     reg2.register(_OfflineDehum(device_id="dh_off", name="Offline Dehum", room="bedroom"))
     logs2 = automation.evaluate(reg2, event_bus)
     assert any("is offline. Skipping adjustment." in line for line in logs2)
+
+
+def test_skips_target_humidity_in_sleep_mode():
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    outdoor = VirtualClimateSensor(
+        device_id="out_weather",
+        name="Outdoor",
+        room="outdoor",
+        initial_temp=8.0,
+        initial_rh=80.0,
+    )
+    indoor = VirtualClimateSensor(
+        device_id="bed_sensor",
+        name="Bedroom Sensor",
+        room="bedroom",
+        initial_temp=19.0,
+        initial_rh=70.0,
+    )
+    dehumidifier = VirtualDehumidifier(
+        device_id="bed_dehum",
+        name="Bedroom Dehum",
+        room="bedroom",
+    )
+    dehumidifier.set_target_humidity(55)
+    dehumidifier.set_mode("sleep")
+    registry.register(outdoor)
+    registry.register(indoor)
+    registry.register(dehumidifier)
+
+    automation = CondensationPreventionAutomation(
+        glazing=GlazingType.DOUBLE,
+        safety_margin_c=3.5,
+        rh_deadband=2,
+        auto_power=True,
+    )
+    logs = automation.evaluate(registry, event_bus)
+
+    # Target remains unchanged at 55% (not updated while in sleep mode), but auto_power turns ON
+    assert dehumidifier.target_humidity_percent == 55
+    assert dehumidifier.is_on is True
+    assert any("[target locked in sleep mode]" in line for line in logs)

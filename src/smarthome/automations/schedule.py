@@ -89,35 +89,7 @@ class QuietScheduleAutomation(Automation):
         weekday = WEEKDAY_NAMES[now.weekday()]
         logs: list[str] = []
 
-        # 1. Enforce active exclusion windows on OnOff devices
-        power_devices = registry.find_devices_with_trait(OnOffTrait)
-        for dev in power_devices:
-            if not dev.is_online:
-                continue
-            is_excluded, window = self.is_room_excluded(dev.room, now)
-            if is_excluded and window is not None:
-                if self.override_checker:
-                    is_held, rem_sec = self.override_checker(dev.id, now.timestamp())
-                    if is_held:
-                        logs.append(
-                            f"Room '{dev.room}': {dev.name} exclusion '{window.label}' skipped "
-                            f"[MANUAL HOLD: {max(1, rem_sec // 60)}m remaining]."
-                        )
-                        continue
-                on_off_trait = dev.require_trait(OnOffTrait)
-                if on_off_trait.is_on:
-                    success = on_off_trait.turn_off()
-                    if success:
-                        logs.append(
-                            f"Room '{dev.room}': {dev.name} turned OFF "
-                            f"(Exclusion '{window.label}' {window.start_time}-{window.end_time})."
-                        )
-                    else:
-                        logs.append(
-                            f"Room '{dev.room}': Failed to turn OFF {dev.name} for exclusion."
-                        )
-
-        # 2. Determine target operational mode
+        # 1. Determine target operational mode
         if weekday in self.all_day_sleep_days:
             is_night = True
             profile_label = "All-Day Sleep"
@@ -132,12 +104,17 @@ class QuietScheduleAutomation(Automation):
 
         target_mode = self.night_mode if is_night else self.day_mode
 
-        # 3. Synchronize operational mode
+        # 2. Synchronize operational mode before exclusions turn OFF devices
+        #    (skip devices that are already OFF so mode changes never wake/lock firmware)
         mode_devices = registry.find_devices_with_trait(ModeControlTrait)
         for dev in mode_devices:
             if not dev.is_online:
                 continue
             if self.rooms and dev.room.lower() not in [r.lower() for r in self.rooms]:
+                continue
+
+            on_off = dev.get_trait(OnOffTrait)
+            if on_off is not None and not on_off.is_on:
                 continue
 
             if self.override_checker:
@@ -164,6 +141,34 @@ class QuietScheduleAutomation(Automation):
                     logs.append(
                         f"Room '{dev.room}': Failed to switch {dev.name} to '{target_mode}'."
                     )
+
+        # 3. Enforce active exclusion windows on OnOff devices
+        power_devices = registry.find_devices_with_trait(OnOffTrait)
+        for dev in power_devices:
+            if not dev.is_online:
+                continue
+            is_excluded, window = self.is_room_excluded(dev.room, now)
+            if is_excluded and window is not None:
+                if self.override_checker:
+                    is_held, rem_sec = self.override_checker(dev.id, now.timestamp())
+                    if is_held:
+                        logs.append(
+                            f"Room '{dev.room}': {dev.name} exclusion '{window.label}' skipped "
+                            f"[MANUAL HOLD: {max(1, rem_sec // 60)}m remaining]."
+                        )
+                        continue
+                on_off_trait = dev.require_trait(OnOffTrait)
+                if on_off_trait.is_on:
+                    success = on_off_trait.turn_off()
+                    if success:
+                        logs.append(
+                            f"Room '{dev.room}': {dev.name} turned OFF "
+                            f"(Exclusion '{window.label}' {window.start_time}-{window.end_time})."
+                        )
+                    else:
+                        logs.append(
+                            f"Room '{dev.room}': Failed to turn OFF {dev.name} for exclusion."
+                        )
 
         if not logs:
             logs.append(f"Quiet hours evaluated (Active={profile_label}, all profiles in sync).")
