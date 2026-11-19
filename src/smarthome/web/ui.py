@@ -447,6 +447,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             </select>
                         </div>
                         <div class="form-field">
+                            <label for="cfg-safety-margin">Safety Margin (°C)</label>
+                            <input type="number" id="cfg-safety-margin" min="0" max="10" step="0.5">
+                        </div>
+                        <div class="form-field">
                             <label for="cfg-override-mins">Manual Hold Duration (min)</label>
                             <input type="number" id="cfg-override-mins" min="0" max="1440" step="15">
                         </div>
@@ -454,6 +458,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                     <h3 style="margin: 1.25rem 0 0.75rem 0; color: var(--warning); font-size: 1rem;">1b. Health & Alert Notifications</h3>
                     <div class="form-grid">
+                        <div class="form-field">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="cfg-alerts-enabled">
+                                <strong>Enable Health Alerts</strong>
+                            </label>
+                            <span style="font-size: 0.7rem; color: var(--text-muted);">Monitor offline devices, tank-full, and low battery</span>
+                        </div>
                         <div class="form-field">
                             <label for="cfg-low-batt">Low Battery Alert (%)</label>
                             <input type="number" id="cfg-low-batt" min="1" max="50" step="5">
@@ -550,6 +561,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         let currentConfig = null;
         let currentState = null;
         let roomHistory = {};
+        let isHoveringChart = false;
+        let isDraggingControl = false;
 
         function escapeHtml(str) {
             if (str == null) return '';
@@ -567,7 +580,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             document.getElementById('accordion-arrow').innerText = el.classList.contains('open') ? '▲' : '▼';
         }
 
-        async function fetchState() {
+        async function fetchState(opts = {}) {
+            const background = Boolean(opts && opts.background);
             try {
                 const [stateRes, histRes] = await Promise.all([
                     fetch('/api/state'),
@@ -579,7 +593,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     roomHistory = histData.rooms || {};
                 }
                 renderAlerts(currentState.alerts || []);
-                renderRooms(currentState);
+                if (!(background && (isHoveringChart || isDraggingControl))) {
+                    renderRooms(currentState);
+                }
                 renderLogs(currentState);
             } catch (err) {
                 console.error("Failed to fetch state:", err);
@@ -615,6 +631,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         window.__roomPoints = window.__roomPoints || {};
 
         function onChartHover(e, safeId) {
+            isHoveringChart = true;
             const points = window.__roomPoints[safeId];
             if (!points || points.length < 2) return;
             const svg = document.getElementById('chart-svg-' + safeId);
@@ -659,6 +676,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
 
         function onChartLeave(safeId) {
+            isHoveringChart = false;
             const curLine = document.getElementById('cursor-line-' + safeId);
             if (curLine) {
                 curLine.setAttribute('visibility', 'hidden');
@@ -819,38 +837,52 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const yTemp = v => T2_BOTTOM - ((Math.min(tMax, Math.max(tMin, v)) - tMin) / (tMax - tMin)) * T2_HEIGHT;
 
             // Polylines
-            const poly = (getter, yFn) => points
+            const polyCoords = (getter, yFn) => points
                 .map((p, i) => {
                     const v = getter(p);
-                    return v != null ? `${xFor(i).toFixed(1)},${yFn(v).toFixed(1)}` : null;
+                    return v != null ? [xFor(i), yFn(v)] : null;
                 })
-                .filter(Boolean)
-                .join(' ');
+                .filter(Boolean);
+            const fmtCoords = coords => coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
 
-            const rhLine = poly(p => p.indoor_rh_percent, yRh);
-            const tempLine = poly(p => p.indoor_temp_c, yTemp);
-            const dpLine = poly(p => p.dew_point_c, yTemp);
-            const safeDpLine = poly(p => p.safe_dew_point_c, yTemp);
+            const rhCoords = polyCoords(p => p.indoor_rh_percent, yRh);
+            const rhLine = fmtCoords(rhCoords);
+            const tempLine = fmtCoords(polyCoords(p => p.indoor_temp_c, yTemp));
+            const dpLine = fmtCoords(polyCoords(p => p.dew_point_c, yTemp));
+            const safeDpLine = fmtCoords(polyCoords(p => p.safe_dew_point_c, yTemp));
 
-            // Shaded area under RH
+            // Shaded area under RH anchored to actual first/last non-null X coordinates
             let rhArea = '';
-            if (rhLine) {
-                rhArea = `<polygon points="${PAD_LEFT},${T1_BOTTOM} ${rhLine} ${W - PAD_RIGHT},${T1_BOTTOM}" fill="url(#rhGrad-${safeId})" />`;
+            if (rhCoords.length > 0) {
+                const firstRhX = rhCoords[0][0].toFixed(1);
+                const lastRhX = rhCoords[rhCoords.length - 1][0].toFixed(1);
+                rhArea = `<polygon points="${firstRhX},${T1_BOTTOM} ${rhLine} ${lastRhX},${T1_BOTTOM}" fill="url(#rhGrad-${safeId})" />`;
             }
 
-            // Power ON & Defrost bars
+            // Power ON & Defrost bars aligned to timestamp intervals and clamped inside plot bounds
             let onBars = '';
             let hasPowerData = false;
             let hasDefrostData = false;
-            const barW = Math.max(1.5, PLOT_W / points.length);
+            const maxRight = W - PAD_RIGHT;
             points.forEach((p, i) => {
+                if (!p.is_defrost && !p.is_on) return;
+                let x0 = Math.max(PAD_LEFT, Math.min(maxRight, xFor(i)));
+                let w;
+                if (i < points.length - 1) {
+                    const x1 = Math.max(x0, Math.min(maxRight, xFor(i + 1)));
+                    w = Math.min(Math.max(1.5, x1 - x0), maxRight - x0);
+                } else {
+                    w = 1.5;
+                    x0 = Math.max(PAD_LEFT, maxRight - w);
+                }
+                if (w <= 0) return;
                 if (p.is_defrost) {
                     hasPowerData = true;
                     hasDefrostData = true;
-                    onBars += `<rect x="${xFor(i).toFixed(1)}" y="${T1_TOP}" width="${barW.toFixed(1)}" height="${T1_HEIGHT}" fill="rgba(168, 85, 247, 0.28)" />`;
+                    onBars += `<rect x="${x0.toFixed(1)}" y="${T1_TOP}" width="${w.toFixed(1)}" height="${T1_HEIGHT}" fill="rgba(168, 85, 247, 0.28)" />`;
                 } else if (p.is_on) {
                     hasPowerData = true;
-                    onBars += `<rect x="${xFor(i).toFixed(1)}" y="${T1_TOP}" width="${barW.toFixed(1)}" height="${T1_HEIGHT}" fill="rgba(56, 189, 248, 0.18)" />`;
+                    onBars += `<rect x="${x0.toFixed(1)}" y="${T1_TOP}" width="${w.toFixed(1)}" height="${T1_HEIGHT}" fill="rgba(56, 189, 248, 0.18)" />`;
                 }
             });
 
@@ -969,7 +1001,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             if (dev.status_flags && dev.status_flags.length) html += `<span style="color: var(--text-muted); font-size: 0.7rem;">Flags: ${escapeHtml(dev.status_flags.join(', '))}</span>`;
             html += '</div>';
 
-            // Controls for dehumidifiers
+            // Controls for dehumidifiers (data-* attributes avoid inline JS string escaping hazards)
             if (isDehum) {
                 const isOn = dev.is_on;
                 const isHeld = dev.is_overridden;
@@ -981,7 +1013,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             <span style="font-size: 0.85rem; font-weight: 600;">Power</span>
                             <div style="display: flex; align-items: center; gap: 0.4rem;">
                                 ${isHeld ? `<span class="badge badge-warning">🔒 Hold ${holdMins}m</span>` : ''}
-                                <button class="btn-sm ${isOn ? 'btn-primary' : 'btn-secondary'}" onclick="sendCommand('${safeDevId}', '${isOn ? 'turn_off' : 'turn_on'}')">
+                                <button type="button" class="btn-sm ${isOn ? 'btn-primary' : 'btn-secondary'}" data-device-id="${safeDevId}" data-action="${isOn ? 'turn_off' : 'turn_on'}">
                                     ${isOn ? '⚡ ON' : '⚪ OFF'}
                                 </button>
                             </div>
@@ -989,7 +1021,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <div class="control-row">
                             <span style="font-size: 0.85rem; font-weight: 600;">Target RH</span>
                             <div class="range-slider">
-                                <input type="range" min="${dev.humidity_range ? dev.humidity_range[0] : 35}" max="${dev.humidity_range ? dev.humidity_range[1] : 70}" step="${dev.humidity_step ?? 5}" value="${targetRh}" onchange="sendCommand('${safeDevId}', 'set_target', {humidity: this.value})">
+                                <input type="range" data-device-id="${safeDevId}" data-action="set_target" min="${dev.humidity_range ? dev.humidity_range[0] : 35}" max="${dev.humidity_range ? dev.humidity_range[1] : 70}" step="${dev.humidity_step ?? 5}" value="${targetRh}">
                                 <span style="font-weight: 700; width: 40px; text-align: right;">${targetRh}%</span>
                             </div>
                         </div>
@@ -997,17 +1029,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             <span style="font-size: 0.85rem; font-weight: 600;">Mode</span>
                             <div class="mode-buttons">
                                 ${(dev.supported_modes || ['manual', 'sleep', 'laundry', 'purify']).map(m => `
-                                    <button class="mode-btn ${dev.current_mode === m ? 'active' : ''}" onclick="sendCommand('${safeDevId}', 'set_mode', {mode: '${escapeHtml(m)}'})">${escapeHtml(m)}</button>
+                                    <button type="button" class="mode-btn ${dev.current_mode === m ? 'active' : ''}" data-device-id="${safeDevId}" data-action="set_mode" data-mode="${escapeHtml(m)}">${escapeHtml(m)}</button>
                                 `).join('')}
                             </div>
                         </div>
                         <div class="control-row">
                             <span style="font-size: 0.8rem; color: var(--text-muted);">Manual Hold</span>
                             <div class="mode-buttons">
-                                <button class="mode-btn" onclick="sendCommand('${safeDevId}', 'set_override', {minutes: 60})">1h</button>
-                                <button class="mode-btn" onclick="sendCommand('${safeDevId}', 'set_override', {minutes: 120})">2h</button>
-                                <button class="mode-btn" onclick="sendCommand('${safeDevId}', 'set_override', {minutes: 240})">4h</button>
-                                ${isHeld ? `<button class="mode-btn active" onclick="sendCommand('${safeDevId}', 'clear_override')">Resume Auto</button>` : ''}
+                                <button type="button" class="mode-btn" data-device-id="${safeDevId}" data-action="set_override" data-minutes="60">1h</button>
+                                <button type="button" class="mode-btn" data-device-id="${safeDevId}" data-action="set_override" data-minutes="120">2h</button>
+                                <button type="button" class="mode-btn" data-device-id="${safeDevId}" data-action="set_override" data-minutes="240">4h</button>
+                                ${isHeld ? `<button type="button" class="mode-btn active" data-device-id="${safeDevId}" data-action="clear_override">Resume Auto</button>` : ''}
                             </div>
                         </div>
                     </div>
@@ -1042,9 +1074,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             document.getElementById('cfg-min-cycle').value = c.min_cycle_seconds ?? 600;
             document.getElementById('cfg-lookahead').value = c.lookahead_hours ?? 12;
             document.getElementById('cfg-glazing').value = c.glazing || 'double';
+            document.getElementById('cfg-safety-margin').value = c.safety_margin_c ?? 1.5;
             document.getElementById('cfg-override-mins').value = c.manual_override_minutes ?? 120;
 
             const a = cfg.alerts || {};
+            document.getElementById('cfg-alerts-enabled').checked = a.enabled !== false;
             document.getElementById('cfg-low-batt').value = a.low_battery_threshold_percent ?? 20;
             document.getElementById('cfg-webhook-url').value = a.webhook_url || '';
 
@@ -1146,21 +1180,50 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 });
             });
 
+            const minTargetRh = parseInt(document.getElementById('cfg-min-rh').value, 10);
+            const maxTargetRh = parseInt(document.getElementById('cfg-max-rh').value, 10);
+            const turnOnOffset = parseFloat(document.getElementById('cfg-on-offset').value);
+            const turnOffOffset = parseFloat(document.getElementById('cfg-off-offset').value);
+            const minCycleSec = parseInt(document.getElementById('cfg-min-cycle').value, 10);
+            const lookaheadHrs = parseInt(document.getElementById('cfg-lookahead').value, 10);
+            const safetyMarginC = parseFloat(document.getElementById('cfg-safety-margin').value);
+            const overrideMins = parseInt(document.getElementById('cfg-override-mins').value, 10);
+            const lowBattPct = parseInt(document.getElementById('cfg-low-batt').value, 10);
+
+            const numericFields = [
+                ['Min Target RH', minTargetRh],
+                ['Max Target RH', maxTargetRh],
+                ['Turn-ON Offset RH', turnOnOffset],
+                ['Turn-OFF Offset RH', turnOffOffset],
+                ['Compressor Cooldown', minCycleSec],
+                ['Forecast Lookahead', lookaheadHrs],
+                ['Safety Margin', safetyMarginC],
+                ['Manual Hold Duration', overrideMins],
+                ['Low Battery Alert', lowBattPct],
+            ];
+            for (const [label, val] of numericFields) {
+                if (!Number.isFinite(val)) {
+                    alert(`Please enter a valid number for "${label}".`);
+                    return;
+                }
+            }
+
             const payload = {
                 condensation: {
                     auto_power: document.getElementById('cfg-auto-power').checked,
-                    min_target_rh: parseInt(document.getElementById('cfg-min-rh').value, 10),
-                    max_target_rh: parseInt(document.getElementById('cfg-max-rh').value, 10),
-                    turn_on_offset_rh: parseFloat(document.getElementById('cfg-on-offset').value),
-                    turn_off_offset_rh: parseFloat(document.getElementById('cfg-off-offset').value),
-                    min_cycle_seconds: parseInt(document.getElementById('cfg-min-cycle').value, 10),
-                    lookahead_hours: parseInt(document.getElementById('cfg-lookahead').value, 10),
+                    min_target_rh: minTargetRh,
+                    max_target_rh: maxTargetRh,
+                    turn_on_offset_rh: turnOnOffset,
+                    turn_off_offset_rh: turnOffOffset,
+                    min_cycle_seconds: minCycleSec,
+                    lookahead_hours: lookaheadHrs,
                     glazing: document.getElementById('cfg-glazing').value,
-                    manual_override_minutes: parseInt(document.getElementById('cfg-override-mins').value, 10)
+                    safety_margin_c: safetyMarginC,
+                    manual_override_minutes: overrideMins
                 },
                 alerts: {
-                    enabled: true,
-                    low_battery_threshold_percent: parseInt(document.getElementById('cfg-low-batt').value, 10),
+                    enabled: document.getElementById('cfg-alerts-enabled').checked,
+                    low_battery_threshold_percent: lowBattPct,
                     webhook_url: document.getElementById('cfg-webhook-url').value.trim() || null
                 },
                 quiet_schedule: {
@@ -1217,10 +1280,35 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             }
         }
 
+        const roomsGridEl = document.getElementById('rooms-grid');
+        roomsGridEl.addEventListener('click', e => {
+            const btn = e.target.closest('button[data-device-id][data-action]');
+            if (!btn) return;
+            const devId = btn.dataset.deviceId;
+            const action = btn.dataset.action;
+            const params = {};
+            if (btn.dataset.mode) params.mode = btn.dataset.mode;
+            if (btn.dataset.minutes) params.minutes = parseInt(btn.dataset.minutes, 10);
+            sendCommand(devId, action, params);
+        });
+        roomsGridEl.addEventListener('pointerdown', e => {
+            if (e.target.matches('input[type="range"]')) {
+                isDraggingControl = true;
+            }
+        });
+        roomsGridEl.addEventListener('change', e => {
+            const slider = e.target.closest('input[type="range"][data-device-id][data-action="set_target"]');
+            if (!slider) return;
+            isDraggingControl = false;
+            sendCommand(slider.dataset.deviceId, 'set_target', { humidity: slider.value });
+        });
+        window.addEventListener('pointerup', () => { isDraggingControl = false; });
+        window.addEventListener('pointercancel', () => { isDraggingControl = false; });
+
         // Auto poll state every 10 seconds
         fetchState();
         fetchConfig();
-        setInterval(fetchState, 10000);
+        setInterval(() => fetchState({ background: true }), 10000);
     </script>
 </body>
 </html>

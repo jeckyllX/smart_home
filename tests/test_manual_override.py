@@ -156,3 +156,46 @@ def test_update_config_preserves_cooldown_and_alert_state():
     new_alert = next(a for a in app.automations if isinstance(a, HealthAlertAutomation))
     assert new_cond._last_power_change.get("dh_bed") == 12345.0
     assert new_alert._last_notified.get("tank_full:dh_bed") == 67890.0
+
+
+def test_runtime_overrides_and_cooldown_persist_across_restart(tmp_path):
+    db_file = tmp_path / "state.db"
+    cfg = SmartHomeConfig.from_dict(
+        {
+            "location": {"latitude": 0.0, "longitude": 0.0, "city": "Test City"},
+            "condensation": {
+                "enabled": True,
+                "target_dew_point_c": 10.0,
+                "min_cycle_seconds": 600,
+                "manual_override_minutes": 120,
+            },
+            "history_db_path": str(db_file),
+        }
+    )
+    cfg.raw_path = tmp_path / "config.json"
+    cfg.save()
+
+    app1 = SmartHomeApplication(cfg, refresh_on_init=False)
+    try:
+        dehum1 = VirtualDehumidifier(device_id="dh_bed", name="Bedroom Dehum", room="bedroom")
+        app1.registry.register(dehum1)
+        ok, _ = app1.execute_device_command("dh_bed", "turn_off")
+        assert ok is True
+        assert app1.is_device_overridden("dh_bed")[0] is True
+        assert "dh_bed" in app1._last_power_change
+        recorded_ts = app1._last_power_change["dh_bed"]
+    finally:
+        app1.stop()
+
+    # Restart new SmartHomeApplication pointing at same history DB
+    app2 = SmartHomeApplication(cfg, refresh_on_init=False)
+    try:
+        is_held, rem = app2.is_device_overridden("dh_bed")
+        assert is_held is True
+        assert rem > 3600
+        cond_auto = next(
+            a for a in app2.automations if isinstance(a, CondensationPreventionAutomation)
+        )
+        assert cond_auto._last_power_change.get("dh_bed") == recorded_ts
+    finally:
+        app2.stop()

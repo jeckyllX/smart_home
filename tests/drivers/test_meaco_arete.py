@@ -73,3 +73,34 @@ def test_initial_refresh_does_not_emit_state_changed_events():
     assert len(state_events) == 1
     assert state_events[0].property_name == "is_on"
     assert state_events[0].new_value is True
+
+
+def test_set_mode_exiting_sleep_and_events_outside_lock():
+    from unittest.mock import MagicMock, patch
+
+    from smarthome.core.events import CommandDispatchedEvent, EventBus
+
+    dev = MeacoAreteTuyaDevice(
+        device_id="dev_1",
+        name="Test Unit",
+        ip="192.0.2.1",
+        local_key="1234567890123456",
+    )
+    dev._cached_dps = {"1": True, "4": "sleep"}
+    dev._client.set_value = MagicMock(return_value={"Payload": "ok"})
+
+    received: list[str] = []
+
+    def on_event(ev: CommandDispatchedEvent) -> None:
+        assert dev._lock._is_owned() is False
+        received.append(ev.command)
+
+    bus = EventBus()
+    bus.subscribe(CommandDispatchedEvent, on_event)
+    dev.event_bus = bus
+
+    with patch("time.sleep"):
+        assert dev.set_mode("manual") is True
+
+    assert received == ["exit_sleep_wake", "set_mode"]
+    assert dev.current_mode == "manual"

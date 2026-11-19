@@ -179,6 +179,7 @@ class ThermoProScannerHub:
         self._scan_backend = scan_backend or default_ble_scanner
 
         self._lock = threading.Lock()
+        self._scan_lock = threading.RLock()
         self._registered_macs: set[str] = set()
         self._cache: dict[str, ThermoProReading] = {}
         self._reading_timestamps: dict[str, float] = {}
@@ -192,41 +193,52 @@ class ThermoProScannerHub:
         norm_mac = normalize_mac(mac)
         now = time.time()
         with self._lock:
-            cache_valid = (now - self._last_scan_time) < self.cache_ttl_seconds
-            if cache_valid and norm_mac in self._cache:
-                return self._cache[norm_mac]
+            cache_valid = (
+                self._last_scan_time > 0.0 and (now - self._last_scan_time) < self.cache_ttl_seconds
+            )
+            if cache_valid:
+                return self._cache.get(norm_mac)
 
-        # Trigger a fresh scan for all registered sensors
-        self.scan_all()
-
-        with self._lock:
-            return self._cache.get(norm_mac)
+        # Serialize BLE scans so concurrent threads wait for the active scan result
+        with self._scan_lock:
+            now = time.time()
+            with self._lock:
+                cache_valid = (
+                    self._last_scan_time > 0.0
+                    and (now - self._last_scan_time) < self.cache_ttl_seconds
+                )
+                if cache_valid:
+                    return self._cache.get(norm_mac)
+            self.scan_all()
+            with self._lock:
+                return self._cache.get(norm_mac)
 
     def scan_all(self) -> dict[str, ThermoProReading]:
         """Perform scan pass and update internal reading cache."""
-        with self._lock:
-            targets = set(self._registered_macs)
+        with self._scan_lock:
+            with self._lock:
+                targets = set(self._registered_macs)
 
-        results = self._scan_backend(self.scan_timeout_seconds, targets)
-        now = time.time()
+            results = self._scan_backend(self.scan_timeout_seconds, targets)
+            now = time.time()
 
-        with self._lock:
-            for mac, reading in results.items():
-                self._cache[mac] = reading
-                self._reading_timestamps[mac] = now
+            with self._lock:
+                for mac, reading in results.items():
+                    self._cache[mac] = reading
+                    self._reading_timestamps[mac] = now
 
-            # Evict readings that have exceeded stale_ttl_seconds
-            stale_macs = [
-                m
-                for m, ts in self._reading_timestamps.items()
-                if (now - ts) >= self.stale_ttl_seconds
-            ]
-            for m in stale_macs:
-                self._cache.pop(m, None)
-                self._reading_timestamps.pop(m, None)
+                # Evict readings that have exceeded stale_ttl_seconds
+                stale_macs = [
+                    m
+                    for m, ts in self._reading_timestamps.items()
+                    if (now - ts) >= self.stale_ttl_seconds
+                ]
+                for m in stale_macs:
+                    self._cache.pop(m, None)
+                    self._reading_timestamps.pop(m, None)
 
-            self._last_scan_time = now
-            return dict(self._cache)
+                self._last_scan_time = now
+                return dict(self._cache)
 
 
 class ThermoProBleDevice(ClimateSensorDevice, BatteryLevelTrait):
@@ -273,23 +285,28 @@ class ThermoProBleDevice(ClimateSensorDevice, BatteryLevelTrait):
 
     @property
     def is_online(self) -> bool:
-        return self._is_online
+        with self._lock:
+            return self._is_online
 
     @property
     def last_seen_time(self) -> float | None:
-        return self._last_seen_time
+        with self._lock:
+            return self._last_seen_time
 
     @property
     def temperature_celsius(self) -> float | None:
-        return self._temp_c
+        with self._lock:
+            return self._temp_c
 
     @property
     def humidity_percent(self) -> float | None:
-        return self._rh_pct
+        with self._lock:
+            return self._rh_pct
 
     @property
     def battery_percent(self) -> int | None:
-        return self._battery_pct
+        with self._lock:
+            return self._battery_pct
 
     def refresh(self) -> bool:
         reading = self.scanner_hub.get_reading(self.mac)

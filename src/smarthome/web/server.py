@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("SmartHomeWebServer")
 
+MAX_REQUEST_BODY_BYTES = 1_048_576
+
 
 class SmartHomeRequestHandler(BaseHTTPRequestHandler):
     """HTTP Request handler exposing dashboard UI and REST endpoints."""
@@ -31,42 +33,73 @@ class SmartHomeRequestHandler(BaseHTTPRequestHandler):
             "%s - - [%s] %s", self.address_string(), self.log_date_time_string(), format % args
         )
 
-    def _send_json(self, data: Any, status: int = HTTPStatus.OK) -> None:
+    def _send_json(self, data: Any, status: int = HTTPStatus.OK, send_body: bool = True) -> None:
         payload = json.dumps(data, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(payload)
+        if send_body:
+            self.wfile.write(payload)
 
-    def _send_html(self, html_str: str, status: int = HTTPStatus.OK) -> None:
+    def _send_html(
+        self, html_str: str, status: int = HTTPStatus.OK, send_body: bool = True
+    ) -> None:
         payload = html_str.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(payload)
+        if send_body:
+            self.wfile.write(payload)
+
+    def _read_json_body(self) -> tuple[dict[str, Any] | None, str | None, int]:
+        raw_len = self.headers.get("Content-Length", "0")
+        try:
+            content_len = int(raw_len)
+        except ValueError:
+            return None, "Invalid Content-Length header", HTTPStatus.BAD_REQUEST
+
+        if content_len < 0:
+            return None, "Negative Content-Length header", HTTPStatus.BAD_REQUEST
+        if content_len > MAX_REQUEST_BODY_BYTES:
+            return (
+                None,
+                f"Request body exceeds maximum size of {MAX_REQUEST_BODY_BYTES} bytes",
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            )
+
+        try:
+            raw_body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
+            parsed = json.loads(raw_body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            return None, f"Invalid JSON body: {e}", HTTPStatus.BAD_REQUEST
+
+        if not isinstance(parsed, dict):
+            return None, "Request body must be a JSON object", HTTPStatus.BAD_REQUEST
+        return parsed, None, HTTPStatus.OK
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS, HEAD")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
     def do_HEAD(self) -> None:
-        self.do_GET()
+        self._handle_get(send_body=False)
 
     def do_GET(self) -> None:
+        self._handle_get(send_body=True)
+
+    def _handle_get(self, send_body: bool = True) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
 
         if path in ("/", "/index.html"):
-            self._send_html(DASHBOARD_HTML)
+            self._send_html(DASHBOARD_HTML, send_body=send_body)
         elif path == "/api/state":
             state = self.server.app.get_dashboard_state()
-            self._send_json(state)
+            self._send_json(state, send_body=send_body)
         elif path == "/api/history":
             qs = parse_qs(parsed.query)
             room_vals = qs.get("room")
@@ -79,19 +112,23 @@ class SmartHomeRequestHandler(BaseHTTPRequestHandler):
             if room_vals and room_vals[0]:
                 room_name = room_vals[0]
                 points = self.server.app.history_store.get_room_history(room_name, hours=hours)
-                self._send_json({"room": room_name, "hours": hours, "points": points})
+                self._send_json(
+                    {"room": room_name, "hours": hours, "points": points}, send_body=send_body
+                )
             else:
                 rooms_hist = self.server.app.history_store.get_all_rooms_history(hours=hours)
-                self._send_json({"hours": hours, "rooms": rooms_hist})
+                self._send_json({"hours": hours, "rooms": rooms_hist}, send_body=send_body)
         elif path == "/api/config":
             cfg_dict = self.server.app.config.to_dict()
             # Redact sensitive keys
             for dev in cfg_dict.get("devices", []):
                 if "local_key" in dev:
                     dev["local_key"] = "********"
-            self._send_json(cfg_dict)
+            self._send_json(cfg_dict, send_body=send_body)
         else:
-            self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
+            self._send_json(
+                {"error": "Not Found"}, status=HTTPStatus.NOT_FOUND, send_body=send_body
+            )
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -111,12 +148,9 @@ class SmartHomeRequestHandler(BaseHTTPRequestHandler):
             and parts[3] == "command"
         ):
             device_id = parts[2]
-            try:
-                content_len = int(self.headers.get("Content-Length", 0))
-                raw_body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
-                body = json.loads(raw_body)
-            except Exception as e:
-                self._send_json({"error": f"Invalid JSON body: {e}"}, status=HTTPStatus.BAD_REQUEST)
+            body, err_msg, err_status = self._read_json_body()
+            if body is None:
+                self._send_json({"error": err_msg}, status=err_status)
                 return
 
             action = body.pop("action", None)
@@ -126,7 +160,14 @@ class SmartHomeRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            ok, msg = self.server.app.execute_device_command(device_id, str(action), **body)
+            try:
+                ok, msg = self.server.app.execute_device_command(device_id, str(action), **body)
+            except (ValueError, TypeError) as e:
+                self._send_json(
+                    {"success": False, "message": str(e)}, status=HTTPStatus.BAD_REQUEST
+                )
+                return
+
             status_code = HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST
             self._send_json({"success": ok, "message": msg}, status=status_code)
             return
@@ -138,19 +179,16 @@ class SmartHomeRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/config":
-            try:
-                content_len = int(self.headers.get("Content-Length", 0))
-                raw_body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
-                data = json.loads(raw_body)
-            except Exception as e:
-                self._send_json(
-                    {"error": f"Invalid JSON payload: {e}"}, status=HTTPStatus.BAD_REQUEST
-                )
+            data, err_msg, err_status = self._read_json_body()
+            if data is None:
+                self._send_json({"error": err_msg}, status=err_status)
                 return
 
             try:
                 self.server.app.update_config(data)
                 self._send_json({"success": True, "message": "Configuration updated and applied."})
+            except (ValueError, TypeError) as e:
+                self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
             except Exception as e:
                 logger.error("Failed to update config: %s", e, exc_info=True)
                 self._send_json({"error": str(e)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)

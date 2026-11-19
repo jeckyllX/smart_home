@@ -87,20 +87,25 @@ def cmd_find(args: argparse.Namespace) -> None:
         sys.exit(f"Unknown trait '{args.trait}'. Available traits: {', '.join(trait_names())}")
 
     app = get_app(args.config)
-    if args.room:
-        devices = app.registry.find_devices_with_trait_in_room(args.room, trait_cls)
-        scope = f" in room '{args.room}'"
-    else:
-        devices = app.registry.find_devices_with_trait(trait_cls)
-        scope = ""
+    try:
+        if args.room:
+            devices = app.registry.find_devices_with_trait_in_room(args.room, trait_cls)
+            scope = f" in room '{args.room}'"
+        else:
+            devices = app.registry.find_devices_with_trait(trait_cls)
+            scope = ""
 
-    print(f"\nDevices supporting {trait_cls.__name__}{scope} ({len(devices)}):\n")
-    print(f"{'ID':<20} | {'Name':<24} | {'Room':<14} | {'Category':<16} | {'Online'}")
-    print("-" * 88)
-    for d in devices:
-        status_str = "ONLINE" if d.is_online else "OFFLINE"
-        print(f"{d.id:<20} | {d.name:<24} | {d.room:<14} | {d.category.value:<16} | {status_str}")
-    print()
+        print(f"\nDevices supporting {trait_cls.__name__}{scope} ({len(devices)}):\n")
+        print(f"{'ID':<20} | {'Name':<24} | {'Room':<14} | {'Category':<16} | {'Online'}")
+        print("-" * 88)
+        for d in devices:
+            status_str = "ONLINE" if d.is_online else "OFFLINE"
+            print(
+                f"{d.id:<20} | {d.name:<24} | {d.room:<14} | {d.category.value:<16} | {status_str}"
+            )
+        print()
+    finally:
+        _close_app(app)
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -354,26 +359,45 @@ def cmd_service_unit(args: argparse.Namespace) -> None:
     config_path = Path(args.config).resolve()
     venv_bin = Path(sys.executable).resolve().parent / "smarthome"
     exec_bin = str(venv_bin) if venv_bin.exists() else f"{sys.executable} -m smarthome.cli"
+    scope = getattr(args, "scope", "system") or "system"
     user = getattr(args, "user", None) or getpass.getuser()
     port = getattr(args, "port", 8765) or 8765
 
-    unit = (
-        "[Unit]\n"
-        "Description=SmartHome Psychrometric Climate & Automation Service\n"
-        "After=network-online.target bluetooth.target\n"
-        "Wants=network-online.target bluetooth.target\n\n"
-        "[Service]\n"
-        "Type=simple\n"
-        f"User={user}\n"
-        f"WorkingDirectory={workdir}\n"
-        f"ExecStart={exec_bin} --config {config_path} web --port {port}\n"
-        "Restart=on-failure\n"
-        "RestartSec=10\n"
-        "StandardOutput=journal\n"
-        "StandardError=journal\n\n"
-        "[Install]\n"
-        "WantedBy=multi-user.target\n"
-    )
+    if scope == "user":
+        unit = (
+            "[Unit]\n"
+            "Description=Smart Home Climate Automation Daemon\n"
+            "After=network-online.target bluetooth.target\n"
+            "Wants=network-online.target bluetooth.target\n\n"
+            "[Service]\n"
+            "Type=simple\n"
+            f"WorkingDirectory={workdir}\n"
+            f"ExecStart={exec_bin} --config {config_path} daemon --port {port}\n"
+            "Restart=always\n"
+            "RestartSec=10\n"
+            "StandardOutput=journal\n"
+            "StandardError=journal\n\n"
+            "[Install]\n"
+            "WantedBy=default.target\n"
+        )
+    else:
+        unit = (
+            "[Unit]\n"
+            "Description=SmartHome Psychrometric Climate & Automation Service\n"
+            "After=network-online.target bluetooth.target\n"
+            "Wants=network-online.target bluetooth.target\n\n"
+            "[Service]\n"
+            "Type=simple\n"
+            f"User={user}\n"
+            f"WorkingDirectory={workdir}\n"
+            f"ExecStart={exec_bin} --config {config_path} web --port {port}\n"
+            "Restart=on-failure\n"
+            "RestartSec=10\n"
+            "StandardOutput=journal\n"
+            "StandardError=journal\n\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n"
+        )
     print(unit)
 
 
@@ -526,6 +550,12 @@ def main() -> None:
     p_svc = subparsers.add_parser(
         "service-unit",
         help="Print a systemd service unit file pre-configured for the current directory",
+    )
+    p_svc.add_argument(
+        "--scope",
+        choices=["system", "user"],
+        default="system",
+        help="Systemd unit scope: 'system' (default) or 'user'",
     )
     p_svc.add_argument("--user", help="System user to run the service as (default: current user)")
     p_svc.add_argument("--port", type=int, default=8765, help="Web UI port (default: 8765)")

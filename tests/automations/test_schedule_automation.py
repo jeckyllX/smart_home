@@ -171,3 +171,56 @@ def test_exclusion_switches_to_day_mode_before_turning_off():
 
     assert dehum.current_mode == "manual"
     assert dehum.is_on is False
+
+
+def test_half_open_window_boundaries_and_overnight_weekday_rollover():
+    from smarthome.config.schema import ExclusionWindowConfig
+
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    dehum = VirtualDehumidifier(device_id="dh_bedroom", name="Bedroom Unit", room="bedroom")
+    dehum.turn_on()
+    dehum.set_mode("manual")
+    registry.register(dehum)
+
+    # Night: Mon-Fri 23:00-07:00; Exclusion: 07:00-23:00 daily
+    exclusion = ExclusionWindowConfig(
+        label="Daytime",
+        start_time="07:00",
+        end_time="23:00",
+        days=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+        enabled=True,
+    )
+    automation = QuietScheduleAutomation(
+        start_time="23:00",
+        end_time="07:00",
+        night_mode="sleep",
+        day_mode="manual",
+        night_days=["mon", "tue", "wed", "thu", "fri"],
+        exclusion_windows=[exclusion],
+    )
+
+    # Friday 23:00 exact boundary -> in night window, NOT excluded
+    fri_2300 = datetime(2026, 10, 16, 23, 0)
+    assert automation.is_room_excluded("bedroom", fri_2300)[0] is False
+    automation.evaluate(registry, event_bus, current_dt=fri_2300)
+    assert dehum.current_mode == "sleep"
+
+    # Saturday 02:00 (after midnight of Friday night) -> still Friday's night window -> sleep
+    sat_0200 = datetime(2026, 10, 17, 2, 0)
+    automation.evaluate(registry, event_bus, current_dt=sat_0200)
+    assert dehum.current_mode == "sleep"
+
+    # Saturday 07:00 exact boundary -> night window ended, exclusion starts -> manual & OFF
+    sat_0700 = datetime(2026, 10, 17, 7, 0)
+    assert automation.is_room_excluded("bedroom", sat_0700)[0] is True
+    automation.evaluate(registry, event_bus, current_dt=sat_0700)
+    assert dehum.current_mode == "manual"
+    assert dehum.is_on is False
+
+    # Sunday 02:00 (after midnight of Saturday night; sat is NOT in night_days) -> stays manual
+    dehum.turn_on()
+    sun_0200 = datetime(2026, 10, 18, 2, 0)
+    automation.evaluate(registry, event_bus, current_dt=sun_0200)
+    assert dehum.current_mode == "manual"

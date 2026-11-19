@@ -177,6 +177,35 @@ def test_scanner_hub_caching_and_coordination():
     assert scan_count == 2
 
 
+def test_scanner_hub_offline_sensor_does_not_rescan_within_ttl():
+    scan_count = 0
+
+    def mock_backend(timeout: float, targets: set[str]) -> dict[str, ThermoProReading]:
+        nonlocal scan_count
+        scan_count += 1
+        # Only first sensor is present; second sensor is offline
+        return {
+            "A4:C1:38:12:34:56": ThermoProReading(
+                temperature_celsius=21.0,
+                humidity_percent=50.0,
+                battery_percent=100,
+                model="TP350",
+            )
+        }
+
+    hub = ThermoProScannerHub(
+        scan_timeout_seconds=5.0,
+        cache_ttl_seconds=30.0,
+        scan_backend=mock_backend,
+    )
+    hub.register_mac("A4:C1:38:12:34:56")
+    hub.register_mac("A4:C1:38:99:99:99")
+
+    assert hub.get_reading("A4:C1:38:12:34:56") is not None
+    assert hub.get_reading("A4:C1:38:99:99:99") is None
+    assert scan_count == 1
+
+
 def test_thermopro_ble_device_traits_and_refresh():
     reading = ThermoProReading(
         temperature_celsius=21.2,

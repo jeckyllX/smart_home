@@ -10,6 +10,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import requests
 
@@ -161,6 +162,10 @@ class HealthAlertAutomation(Automation):
 
     @staticmethod
     def _default_webhook_sender(url: str, payload: dict[str, Any]) -> bool:
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+            logger.warning("Ignoring invalid alert webhook URL %r", url)
+            return False
         try:
             resp = requests.post(url, json=payload, timeout=5.0)
             resp.raise_for_status()

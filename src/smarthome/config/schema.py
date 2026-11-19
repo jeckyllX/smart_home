@@ -5,11 +5,37 @@ Typed configuration schemas and loader for Smart Home platform.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from smarthome.physics.psychrometrics import GlazingType
+
+
+def _validate_hhmm(value: Any, field_name: str) -> str:
+    s = str(value).strip()
+    if len(s) != 5 or s[2] != ":":
+        raise ValueError(f"{field_name} must be HH:MM (00:00-23:59), got {value!r}")
+    try:
+        datetime.strptime(s, "%H:%M")
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be HH:MM (00:00-23:59), got {value!r}") from exc
+    return s
+
+
+def _validate_webhook_url(url: str | None) -> str | None:
+    if url is None:
+        return None
+    s = str(url).strip()
+    if not s:
+        return None
+    parsed = urlparse(s)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"webhook_url must be an http:// or https:// URL, got {s!r}")
+    return s
 
 
 @dataclass
@@ -55,8 +81,8 @@ class ExclusionWindowConfig:
 
         return cls(
             label=str(data.get("label", "Exclusion Window")),
-            start_time=str(data.get("start_time", "00:00")),
-            end_time=str(data.get("end_time", "07:00")),
+            start_time=_validate_hhmm(data.get("start_time", "00:00"), "exclusion start_time"),
+            end_time=_validate_hhmm(data.get("end_time", "07:00"), "exclusion end_time"),
             days=days,
             rooms=rooms,
             enabled=bool(data.get("enabled", True)),
@@ -147,11 +173,11 @@ class AlertsConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AlertsConfig:
         webhook_raw = data.get("webhook_url")
-        webhook_url = str(webhook_raw).strip() if webhook_raw else None
+        webhook_url = _validate_webhook_url(str(webhook_raw) if webhook_raw is not None else None)
         return cls(
             enabled=bool(data.get("enabled", True)),
             low_battery_threshold_percent=int(data.get("low_battery_threshold_percent", 20)),
-            webhook_url=webhook_url or None,
+            webhook_url=webhook_url,
             webhook_cooldown_minutes=int(data.get("webhook_cooldown_minutes", 60)),
         )
 
@@ -239,9 +265,15 @@ class SmartHomeConfig:
     def from_dict(cls, data: dict[str, Any]) -> SmartHomeConfig:
         # Location
         loc_data = data.get("location", {})
+        lat = float(loc_data.get("latitude", 0.0))
+        lon = float(loc_data.get("longitude", 0.0))
+        if not (math.isfinite(lat) and -90.0 <= lat <= 90.0):
+            raise ValueError(f"location.latitude must be between -90 and 90, got {lat!r}")
+        if not (math.isfinite(lon) and -180.0 <= lon <= 180.0):
+            raise ValueError(f"location.longitude must be between -180 and 180, got {lon!r}")
         location = LocationConfig(
-            latitude=float(loc_data.get("latitude", 0.0)),
-            longitude=float(loc_data.get("longitude", 0.0)),
+            latitude=lat,
+            longitude=lon,
             city=str(loc_data.get("city", "Unknown")),
         )
 
@@ -275,6 +307,28 @@ class SmartHomeConfig:
             glazing = GlazingType.DOUBLE
 
         target_dew_point_raw = cond_data.get("target_dew_point_c")
+        min_target_rh = int(cond_data.get("min_target_rh", 40))
+        max_target_rh = int(cond_data.get("max_target_rh", 60))
+        if not (0 <= min_target_rh <= max_target_rh <= 100):
+            raise ValueError(
+                f"Invalid target RH bounds: min_target_rh ({min_target_rh}) and "
+                f"max_target_rh ({max_target_rh}) must satisfy 0 <= min <= max <= 100"
+            )
+        safety_margin_c = float(cond_data.get("safety_margin_c", 1.5))
+        if not (math.isfinite(safety_margin_c) and safety_margin_c >= 0):
+            raise ValueError(f"condensation.safety_margin_c must be >= 0, got {safety_margin_c!r}")
+        min_cycle_seconds = int(cond_data.get("min_cycle_seconds", 600))
+        if min_cycle_seconds < 0:
+            raise ValueError(
+                f"condensation.min_cycle_seconds must be >= 0, got {min_cycle_seconds!r}"
+            )
+        manual_override_minutes = int(cond_data.get("manual_override_minutes", 120))
+        if manual_override_minutes < 0:
+            raise ValueError(
+                "condensation.manual_override_minutes must be >= 0, "
+                f"got {manual_override_minutes!r}"
+            )
+
         condensation = CondensationAutomationConfig(
             enabled=bool(cond_data.get("enabled", True)),
             glazing=glazing,
@@ -284,9 +338,9 @@ class SmartHomeConfig:
                     cond_data.get("estimated_indoor_temp_c", 20.0),
                 )
             ),
-            min_target_rh=int(cond_data.get("min_target_rh", 40)),
-            max_target_rh=int(cond_data.get("max_target_rh", 60)),
-            safety_margin_c=float(cond_data.get("safety_margin_c", 1.5)),
+            min_target_rh=min_target_rh,
+            max_target_rh=max_target_rh,
+            safety_margin_c=safety_margin_c,
             target_dew_point_c=(
                 float(target_dew_point_raw) if target_dew_point_raw is not None else None
             ),
@@ -295,8 +349,8 @@ class SmartHomeConfig:
             auto_power=bool(cond_data.get("auto_power", True)),
             turn_on_offset_rh=float(cond_data.get("turn_on_offset_rh", 2.0)),
             turn_off_offset_rh=float(cond_data.get("turn_off_offset_rh", 2.0)),
-            min_cycle_seconds=int(cond_data.get("min_cycle_seconds", 600)),
-            manual_override_minutes=int(cond_data.get("manual_override_minutes", 120)),
+            min_cycle_seconds=min_cycle_seconds,
+            manual_override_minutes=manual_override_minutes,
         )
 
         # Quiet Schedule (canonical key first, legacy alias as fallback)
@@ -322,8 +376,10 @@ class SmartHomeConfig:
 
         quiet_schedule = QuietScheduleAutomationConfig(
             enabled=bool(sched_data.get("enabled", True)),
-            start_time=str(sched_data.get("start_time", "23:00")),
-            end_time=str(sched_data.get("end_time", "07:00")),
+            start_time=_validate_hhmm(
+                sched_data.get("start_time", "23:00"), "quiet_schedule.start_time"
+            ),
+            end_time=_validate_hhmm(sched_data.get("end_time", "07:00"), "quiet_schedule.end_time"),
             rooms=sched_data.get("rooms"),
             night_mode=str(sched_data.get("night_mode", "sleep")),
             day_mode=str(sched_data.get("day_mode", "manual")),
@@ -340,6 +396,10 @@ class SmartHomeConfig:
         web_data = data.get("web", {})
         web = WebServerConfig.from_dict(web_data)
 
+        polling_interval = int(data.get("polling_interval_seconds", 60))
+        if polling_interval < 1:
+            raise ValueError(f"polling_interval_seconds must be >= 1, got {polling_interval!r}")
+
         return cls(
             location=location,
             tuya_devices=tuya_devices,
@@ -348,7 +408,7 @@ class SmartHomeConfig:
             quiet_schedule=quiet_schedule,
             alerts=alerts,
             web=web,
-            polling_interval_seconds=int(data.get("polling_interval_seconds", 60)),
+            polling_interval_seconds=polling_interval,
             history_db_path=str(data.get("history_db_path", "history.db")),
             history_retention_days=int(data.get("history_retention_days", 7)),
         )

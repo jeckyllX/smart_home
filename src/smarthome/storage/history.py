@@ -23,6 +23,14 @@ from smarthome.core.events import (
 logger = logging.getLogger("TelemetryStore")
 
 
+def _aggregate_bool_flag(values: list[bool | None]) -> bool | None:
+    if any(v is True for v in values):
+        return True
+    if any(v is False for v in values):
+        return False
+    return None
+
+
 class TelemetryStore:
     """
     Thread-safe SQLite store recording room climate snapshots and device events.
@@ -85,6 +93,14 @@ class TelemetryStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_device_events_ts
                 ON device_events (timestamp);
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS runtime_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 """
             )
             self._conn.commit()
@@ -231,12 +247,60 @@ class TelemetryStore:
         ]
 
         if max_points > 0 and len(points) > max_points:
-            step = len(points) / max_points
-            sampled = [points[int(i * step)] for i in range(max_points - 1)]
-            sampled.append(points[-1])
+            n = len(points)
+            sampled: list[dict[str, Any]] = []
+            for i in range(max_points):
+                start = (i * n) // max_points
+                end = max(start + 1, ((i + 1) * n) // max_points)
+                if i == max_points - 1:
+                    end = n
+                bucket = points[start:end]
+                rep = dict(bucket[-1])
+                rep["is_on"] = _aggregate_bool_flag([p["is_on"] for p in bucket])
+                rep["is_defrost"] = _aggregate_bool_flag([p["is_defrost"] for p in bucket])
+                sampled.append(rep)
             return sampled
 
         return points
+
+    def set_state(self, key: str, value: Any) -> None:
+        """Persist a JSON-serializable runtime state value."""
+        payload = json.dumps(value)
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO runtime_state (key, value)
+                VALUES (?, ?)
+                """,
+                (key, payload),
+            )
+            self._conn.commit()
+
+    def get_state(self, key: str) -> Any | None:
+        """Retrieve a persisted runtime state value, or None if absent."""
+        with self._lock:
+            cur = self._conn.execute("SELECT value FROM runtime_state WHERE key = ?", (key,))
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return json.loads(row["value"])
+
+    def delete_state(self, key: str) -> None:
+        """Delete a persisted runtime state entry if present."""
+        with self._lock:
+            self._conn.execute("DELETE FROM runtime_state WHERE key = ?", (key,))
+            self._conn.commit()
+
+    def get_state_by_prefix(self, prefix: str) -> dict[str, Any]:
+        """Return all persisted runtime state entries whose key starts with `prefix`."""
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT key, value FROM runtime_state WHERE key LIKE ? ESCAPE '\\'",
+                (escaped,),
+            )
+            rows = cur.fetchall()
+        return {str(r["key"]): json.loads(r["value"]) for r in rows}
 
     def get_all_rooms_history(
         self,

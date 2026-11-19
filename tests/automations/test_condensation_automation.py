@@ -708,3 +708,62 @@ def test_skips_target_humidity_in_sleep_mode():
     assert dehumidifier.target_humidity_percent == 55
     assert dehumidifier.is_on is True
     assert any("[target locked in sleep mode]" in line for line in logs)
+
+
+def test_condensation_risk_logged_during_hold_and_exclusion_and_null_status():
+    registry = DeviceRegistry()
+    event_bus = EventBus()
+
+    indoor = VirtualClimateSensor(
+        device_id="bed_sensor",
+        name="Bedroom Sensor",
+        room="bedroom",
+        initial_temp=19.0,
+        initial_rh=78.0,
+    )
+    dehumidifier = VirtualDehumidifier(
+        device_id="bed_dehum",
+        name="Bedroom Dehum",
+        room="bedroom",
+    )
+    registry.register(indoor)
+    registry.register(dehumidifier)
+
+    # Without outdoor sensor or fixed target, thresholds should be None (not faked at 55)
+    window_auto = CondensationPreventionAutomation(glazing=GlazingType.DOUBLE)
+    status = window_auto.compute_room_status(registry, "bedroom", dehumidifier)
+    assert status["safe_target_rh"] is None
+    assert status["turn_on_threshold_rh"] is None
+    assert status["turn_off_threshold_rh"] is None
+
+    # Held device still logs CONDENSATION RISK ACTIVE when indoor_rh > raw_safe_rh
+    power_events: list[tuple[str, float]] = []
+    held_auto = CondensationPreventionAutomation(
+        target_dew_point_c=10.0,
+        override_checker=lambda dev_id, ts: (True, 300),
+        on_power_change=lambda dev_id, ts: power_events.append((dev_id, ts)),
+    )
+    logs_held = held_auto.evaluate(registry, event_bus)
+    assert any(
+        "[MANUAL HOLD: 5m remaining] [CONDENSATION RISK ACTIVE]" in line for line in logs_held
+    )
+
+    # Excluded device still logs CONDENSATION RISK ACTIVE
+    excl_auto = CondensationPreventionAutomation(
+        target_dew_point_c=10.0,
+        exclusion_checker=lambda room, dt: (True, {"label": "Peak"}),
+    )
+    logs_excl = excl_auto.evaluate(registry, event_bus)
+    assert any("[CONDENSATION RISK ACTIVE]" in line for line in logs_excl)
+
+    # Auto power triggers on_power_change callback
+    dehumidifier.turn_off()
+    dehumidifier.set_target_humidity(55)
+    active_auto = CondensationPreventionAutomation(
+        target_dew_point_c=10.0,
+        auto_power=True,
+        on_power_change=lambda dev_id, ts: power_events.append((dev_id, ts)),
+    )
+    active_auto.evaluate(registry, event_bus)
+    assert len(power_events) == 1
+    assert power_events[0][0] == "bed_dehum"

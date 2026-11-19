@@ -2,6 +2,8 @@
 Unit tests for SmartHomeConfig schema parsing and validation.
 """
 
+import pytest
+
 from smarthome.config.schema import SmartHomeConfig
 from smarthome.physics.psychrometrics import GlazingType
 
@@ -290,3 +292,31 @@ def test_config_roundtrip_save_and_load(tmp_path):
 def test_config_accepts_secondary_glazing():
     cfg = SmartHomeConfig.from_dict({"condensation": {"glazing": "secondary"}})
     assert cfg.condensation.glazing == GlazingType.SECONDARY
+
+
+def test_config_validation_rejects_invalid_values():
+    # Invalid HH:MM in quiet_schedule
+    with pytest.raises(ValueError, match="HH:MM"):
+        SmartHomeConfig.from_dict({"quiet_schedule": {"start_time": "25:00"}})
+
+    # Invalid HH:MM in exclusion window
+    with pytest.raises(ValueError, match="HH:MM"):
+        SmartHomeConfig.from_dict(
+            {"quiet_schedule": {"exclusion_windows": [{"start_time": "bad", "end_time": "08:00"}]}}
+        )
+
+    # min_target_rh > max_target_rh
+    with pytest.raises(ValueError, match="target RH"):
+        SmartHomeConfig.from_dict({"condensation": {"min_target_rh": 65, "max_target_rh": 50}})
+
+    # Out-of-range coordinates
+    with pytest.raises(ValueError, match="latitude"):
+        SmartHomeConfig.from_dict({"location": {"latitude": 95.0, "longitude": 0.0}})
+    with pytest.raises(ValueError, match="longitude"):
+        SmartHomeConfig.from_dict({"location": {"latitude": 0.0, "longitude": -181.0}})
+
+    # Unsafe webhook scheme
+    with pytest.raises(ValueError, match="webhook_url"):
+        SmartHomeConfig.from_dict({"alerts": {"webhook_url": "file:///etc/passwd"}})
+    with pytest.raises(ValueError, match="webhook_url"):
+        SmartHomeConfig.from_dict({"alerts": {"webhook_url": "ftp://example.com/hook"}})

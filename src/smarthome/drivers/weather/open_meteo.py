@@ -68,43 +68,68 @@ class OpenMeteoWeatherDevice(ClimateSensorDevice, TemperatureForecastTrait, Stat
 
     @property
     def is_online(self) -> bool:
-        return self._is_online
+        with self._lock:
+            return self._is_online
 
     @property
     def temperature_celsius(self) -> float | None:
-        return self._temp_c
+        with self._lock:
+            return self._temp_c
 
     @property
     def humidity_percent(self) -> float | None:
-        return self._rh_pct
+        with self._lock:
+            return self._rh_pct
 
     @property
     def hourly_temperature_forecast_celsius(self) -> tuple[float, ...]:
-        return self._hourly_temps_c
+        with self._lock:
+            return self._hourly_temps_c
 
     @property
     def status_flags(self) -> tuple[str, ...]:
-        if self._station_source:
-            return (self._station_source,)
-        return ()
+        with self._lock:
+            if self._station_source:
+                return (self._station_source,)
+            return ()
 
     @property
     def station_source(self) -> str:
-        return self._station_source
+        with self._lock:
+            return self._station_source
 
     def min_forecast_temperature(self, hours: int) -> float | None:
-        if hours <= 0 or not self._hourly_temps_c:
+        if hours <= 0:
             return None
-        return min(self._hourly_temps_c[:hours])
+        with self._lock:
+            if not self._hourly_temps_c:
+                return None
+            return min(self._hourly_temps_c[:hours])
 
-    def _fetch_nearest_metar(self) -> tuple[float | None, float | None, str | None]:
+    def update_location(self, latitude: float, longitude: float, name: str) -> bool:
+        """Atomically update coordinates and display name; return True if location changed."""
+        with self._lock:
+            loc_changed = (
+                self.latitude != latitude or self.longitude != longitude or self.name != name
+            )
+            self.latitude = latitude
+            self.longitude = longitude
+            self.name = name
+            return loc_changed
+
+    def _fetch_nearest_metar(
+        self, lat: float | None = None, lon: float | None = None
+    ) -> tuple[float | None, float | None, str | None]:
         """
         Query aviationweather.gov for the nearest physical airport weather station
-        around (self.latitude, self.longitude).
+        around (lat, lon).
         Returns (temp_c, rh_pct, source_label) or (None, None, None) on failure.
         """
         try:
-            lat, lon = self.latitude, self.longitude
+            if lat is None or lon is None:
+                with self._lock:
+                    lat = self.latitude if lat is None else lat
+                    lon = self.longitude if lon is None else lon
             # Search within ~80 km bounding box
             d_lat = 0.75
             d_lon = 1.0
@@ -161,11 +186,17 @@ class OpenMeteoWeatherDevice(ClimateSensorDevice, TemperatureForecastTrait, Stat
         with self._lock:
             if not force and self._temp_c is not None and (now - self._last_fetch < self.cache_ttl):
                 return True
+            lat = self.latitude
+            lon = self.longitude
+            station_name = self.name
 
+        om_temp: float | None = None
+        om_rh: float | None = None
+        hourly_temps: tuple[float, ...] = ()
         try:
             params = {
-                "latitude": str(self.latitude),
-                "longitude": str(self.longitude),
+                "latitude": str(lat),
+                "longitude": str(lon),
                 "current": "temperature_2m,relative_humidity_2m",
                 "hourly": "temperature_2m",
                 "forecast_hours": "24",
@@ -175,57 +206,64 @@ class OpenMeteoWeatherDevice(ClimateSensorDevice, TemperatureForecastTrait, Stat
             data = resp.json()
             current = data.get("current", {})
             hourly = data.get("hourly", {})
-            temp = current.get("temperature_2m")
-            rh = current.get("relative_humidity_2m")
+            raw_temp = current.get("temperature_2m")
+            raw_rh = current.get("relative_humidity_2m")
             raw_hourly = hourly.get("temperature_2m", [])
             hourly_temps = tuple(float(t) for t in raw_hourly if t is not None)
-
-            if temp is not None and rh is not None:
-                source = "Open-Meteo Model"
-                temp_c = float(temp)
-                rh_pct = float(rh)
-
-                # Augment with live physical ground observation from nearest airport station
-                obs_temp, obs_rh, obs_source = self._fetch_nearest_metar()
-                if obs_temp is not None:
-                    temp_c = obs_temp
-                    if obs_rh is not None:
-                        rh_pct = obs_rh
-                    if obs_source is not None:
-                        source = obs_source
-
-                with self._lock:
-                    self._temp_c = temp_c
-                    self._rh_pct = rh_pct
-                    self._hourly_temps_c = hourly_temps
-                    self._station_source = source
-                    self._last_fetch = now
-                    self._is_online = True
-
-                if self.event_bus:
-                    self.event_bus.publish(
-                        TelemetryEvent(
-                            device_id=self.id,
-                            metric="temperature",
-                            value=self._temp_c,
-                            unit="°C",
-                        )
-                    )
-                    self.event_bus.publish(
-                        TelemetryEvent(
-                            device_id=self.id,
-                            metric="relative_humidity",
-                            value=self._rh_pct,
-                            unit="%",
-                        )
-                    )
-                return True
+            if raw_temp is not None:
+                om_temp = float(raw_temp)
+            if raw_rh is not None:
+                om_rh = float(raw_rh)
         except Exception as e:
-            logger.warning("Error fetching weather for %s: %s", self.name, e)
+            logger.warning("Error fetching Open-Meteo weather for %s: %s", station_name, e)
+
+        obs_temp, obs_rh, obs_source = self._fetch_nearest_metar(lat, lon)
+
+        temp_c: float | None = None
+        rh_pct: float | None = None
+        source = "Initializing"
+
+        if obs_temp is not None:
+            temp_c = obs_temp
+            rh_pct = obs_rh if obs_rh is not None else om_rh
+            source = obs_source or "Physical (METAR)"
+        elif om_temp is not None:
+            temp_c = om_temp
+            rh_pct = om_rh
+            source = "Open-Meteo Model"
+        else:
             with self._lock:
                 self._is_online = False
             return False
-        return False
+
+        fetch_ts = time.time()
+        with self._lock:
+            self._temp_c = temp_c
+            self._rh_pct = rh_pct
+            self._hourly_temps_c = hourly_temps
+            self._station_source = source
+            self._last_fetch = fetch_ts
+            self._is_online = True
+
+        if self.event_bus:
+            self.event_bus.publish(
+                TelemetryEvent(
+                    device_id=self.id,
+                    metric="temperature",
+                    value=temp_c,
+                    unit="°C",
+                )
+            )
+            if rh_pct is not None:
+                self.event_bus.publish(
+                    TelemetryEvent(
+                        device_id=self.id,
+                        metric="relative_humidity",
+                        value=rh_pct,
+                        unit="%",
+                    )
+                )
+        return True
 
 
 class OpenMeteoDriver(Driver):

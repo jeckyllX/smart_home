@@ -146,3 +146,50 @@ def test_telemetry_store_defrost_and_migration(tmp_path: Path):
     assert points[1]["is_on"] is True
     assert points[1]["is_defrost"] is True
     store.close()
+
+
+def test_bucketed_downsampling_preserves_brief_defrost_and_power_cycles(tmp_path: Path):
+    db_file = tmp_path / "buckets.db"
+    store = TelemetryStore(db_path=db_file, retention_days=7)
+
+    base_ts = 1_700_000_000.0
+    # Record 100 points: points 4 and 5 (middle of first bucket) have is_on=True, is_defrost=True
+    for i in range(100):
+        is_defrost = i in (4, 5)
+        is_on = i in (4, 5)
+        store.record_room_snapshot(
+            room="bedroom",
+            status={"indoor_temp_c": 19.0, "indoor_rh_percent": 55.0},
+            is_on=is_on,
+            is_defrost=is_defrost,
+            timestamp=base_ts + (i * 60),
+        )
+
+    downsampled = store.get_room_history(
+        "bedroom", hours=24.0, max_points=10, now_ts=base_ts + 6000
+    )
+    assert len(downsampled) == 10
+    assert any(p["is_defrost"] is True for p in downsampled)
+    assert any(p["is_on"] is True for p in downsampled)
+    assert downsampled[0]["is_defrost"] is True
+    store.close()
+
+
+def test_runtime_state_persistence_crud(tmp_path: Path):
+    db_file = tmp_path / "state.db"
+    store = TelemetryStore(db_path=db_file)
+
+    store.set_state("override:dev_1", 123456.0)
+    store.set_state("override:dev_2", 789012.0)
+    store.set_state("power_change:dev_1", 555.0)
+
+    assert store.get_state("override:dev_1") == 123456.0
+    assert store.get_state("missing") is None
+
+    overrides = store.get_state_by_prefix("override:")
+    assert overrides == {"override:dev_1": 123456.0, "override:dev_2": 789012.0}
+
+    store.delete_state("override:dev_1")
+    assert store.get_state("override:dev_1") is None
+    assert store.get_state_by_prefix("override:") == {"override:dev_2": 789012.0}
+    store.close()

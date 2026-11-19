@@ -42,6 +42,7 @@ class QuietScheduleAutomation(Automation):
         all_day_sleep_days: list[str] | None = None,
         exclusion_windows: list[ExclusionWindowConfig] | None = None,
         override_checker: Callable[[str, float | None], tuple[bool, int]] | None = None,
+        on_power_change: Callable[[str, float], None] | None = None,
     ):
         super().__init__(name=name, enabled=enabled)
         self.start_time = start_time
@@ -53,6 +54,7 @@ class QuietScheduleAutomation(Automation):
         self.all_day_sleep_days = [d.lower() for d in (all_day_sleep_days or [])]
         self.exclusion_windows = list(exclusion_windows or [])
         self.override_checker = override_checker
+        self.on_power_change = on_power_change
 
     def is_room_excluded(
         self, room: str, now: datetime | None = None
@@ -64,7 +66,6 @@ class QuietScheduleAutomation(Automation):
             return False, None
 
         dt = now or datetime.now()
-        weekday = WEEKDAY_NAMES[dt.weekday()]
         cur_time = dt.time()
 
         for window in self.exclusion_windows:
@@ -72,7 +73,8 @@ class QuietScheduleAutomation(Automation):
                 continue
             if window.rooms and room.lower() not in [r.lower() for r in window.rooms]:
                 continue
-            if weekday not in [d.lower() for d in window.days]:
+            eff_day = self._effective_weekday(window.start_time, window.end_time, dt)
+            if eff_day not in [d.lower() for d in window.days]:
                 continue
             if self._is_in_window(window.start_time, window.end_time, cur_time):
                 return True, window
@@ -87,13 +89,14 @@ class QuietScheduleAutomation(Automation):
 
         now = current_dt or datetime.now()
         weekday = WEEKDAY_NAMES[now.weekday()]
+        effective_night_day = self._effective_weekday(self.start_time, self.end_time, now)
         logs: list[str] = []
 
         # 1. Determine target operational mode
         if weekday in self.all_day_sleep_days:
             is_night = True
             profile_label = "All-Day Sleep"
-        elif weekday in self.night_days and self._is_in_window(
+        elif effective_night_day in self.night_days and self._is_in_window(
             self.start_time, self.end_time, now.time()
         ):
             is_night = True
@@ -161,6 +164,8 @@ class QuietScheduleAutomation(Automation):
                 if on_off_trait.is_on:
                     success = on_off_trait.turn_off()
                     if success:
+                        if self.on_power_change:
+                            self.on_power_change(dev.id, now.timestamp())
                         logs.append(
                             f"Room '{dev.room}': {dev.name} turned OFF "
                             f"(Exclusion '{window.label}' {window.start_time}-{window.end_time})."
@@ -176,9 +181,19 @@ class QuietScheduleAutomation(Automation):
         return logs
 
     @staticmethod
+    def _effective_weekday(start_str: str, end_str: str, dt: datetime) -> str:
+        start = datetime.strptime(start_str, "%H:%M").time()
+        end = datetime.strptime(end_str, "%H:%M").time()
+        if start > end and dt.time() < end:
+            return WEEKDAY_NAMES[(dt.weekday() - 1) % 7]
+        return WEEKDAY_NAMES[dt.weekday()]
+
+    @staticmethod
     def _is_in_window(start_str: str, end_str: str, current: dtime) -> bool:
         start = datetime.strptime(start_str, "%H:%M").time()
         end = datetime.strptime(end_str, "%H:%M").time()
-        if start <= end:
-            return start <= current <= end
-        return current >= start or current <= end
+        if start == end:
+            return True
+        if start < end:
+            return start <= current < end
+        return current >= start or current < end

@@ -39,6 +39,16 @@ from smarthome.storage.history import TelemetryStore
 
 logger = logging.getLogger("SmartHomeApp")
 
+EDITABLE_CONFIG_KEYS = frozenset(
+    {
+        "condensation",
+        "quiet_schedule",
+        "alerts",
+        "location",
+        "polling_interval_seconds",
+    }
+)
+
 
 class SmartHomeApplication:
     """
@@ -57,9 +67,12 @@ class SmartHomeApplication:
         self.event_bus = EventBus()
         self.automations: list[Automation] = []
         self._lock = threading.RLock()
+        self._eval_lock = threading.Lock()
         self._running = False
+        self._closed = False
         self._web_server: SmartHomeWebServer | None = None
         self._manual_overrides: dict[str, float] = {}
+        self._last_power_change: dict[str, float] = {}
 
         if history_store is not None:
             self.history_store = history_store
@@ -74,12 +87,31 @@ class SmartHomeApplication:
                 retention_days=config.history_retention_days,
             )
         self.history_store.attach_event_bus(self.event_bus)
+        self._restore_runtime_state()
 
         self.last_evaluation_logs: list[str] = []
         self.last_evaluation_time: float | None = None
 
         self._setup_drivers()
         self._setup_automations()
+
+    def _restore_runtime_state(self) -> None:
+        """Restore active manual holds and compressor cooldown timestamps from storage."""
+        now = time.time()
+        try:
+            for key, val in self.history_store.get_state_by_prefix("override:").items():
+                dev_id = key[len("override:") :]
+                if isinstance(val, (int, float)) and float(val) > now:
+                    self._manual_overrides[dev_id] = float(val)
+                else:
+                    self.history_store.delete_state(key)
+
+            for key, val in self.history_store.get_state_by_prefix("power_change:").items():
+                dev_id = key[len("power_change:") :]
+                if isinstance(val, (int, float)):
+                    self._last_power_change[dev_id] = float(val)
+        except Exception as e:
+            logger.warning("Failed to restore runtime state: %s", e)
 
     def _setup_drivers(self) -> None:
         # Weather driver
@@ -117,14 +149,20 @@ class SmartHomeApplication:
         with self._lock:
             if minutes <= 0:
                 self._manual_overrides.pop(device_id, None)
+                if not self._closed:
+                    self.history_store.delete_state(f"override:{device_id}")
                 return 0.0
             self._manual_overrides[device_id] = until_ts
+            if not self._closed:
+                self.history_store.set_state(f"override:{device_id}", until_ts)
             return until_ts
 
     def clear_manual_override(self, device_id: str) -> None:
         """Clear any active manual hold for a device, resuming automatic control."""
         with self._lock:
             self._manual_overrides.pop(device_id, None)
+            if not self._closed:
+                self.history_store.delete_state(f"override:{device_id}")
 
     def is_device_overridden(self, device_id: str, now_ts: float | None = None) -> tuple[bool, int]:
         """Return (is_overridden, remaining_seconds) for a device."""
@@ -136,21 +174,35 @@ class SmartHomeApplication:
             rem = int(until_ts - now)
             if rem <= 0:
                 self._manual_overrides.pop(device_id, None)
+                if not self._closed:
+                    self.history_store.delete_state(f"override:{device_id}")
                 return False, 0
             return True, rem
+
+    def record_power_change(self, device_id: str, ts: float | None = None) -> None:
+        """Record the latest compressor power transition timestamp for cooldown tracking."""
+        ts_val = ts if ts is not None else time.time()
+        with self._lock:
+            self._last_power_change[device_id] = ts_val
+            for auto in self.automations:
+                if isinstance(auto, CondensationPreventionAutomation):
+                    auto._last_power_change[device_id] = ts_val
+            if not self._closed:
+                self.history_store.set_state(f"power_change:{device_id}", ts_val)
 
     def _setup_automations(self) -> None:
         with self._lock:
             # Preserve runtime cooldown/alert state across config reloads
-            prev_power_change: dict[str, float] = {}
+            prev_power_change: dict[str, float] = dict(self._last_power_change)
             prev_last_notified: dict[str, float] = {}
             prev_active_alerts = []
             for existing in self.automations:
                 if isinstance(existing, CondensationPreventionAutomation):
-                    prev_power_change = dict(existing._last_power_change)
+                    prev_power_change.update(existing._last_power_change)
                 elif isinstance(existing, HealthAlertAutomation):
                     prev_last_notified = dict(existing._last_notified)
                     prev_active_alerts = list(existing._active_alerts)
+            self._last_power_change.update(prev_power_change)
 
             self.automations.clear()
 
@@ -168,6 +220,7 @@ class SmartHomeApplication:
                     all_day_sleep_days=s_cfg.all_day_sleep_days,
                     exclusion_windows=s_cfg.exclusion_windows,
                     override_checker=self.is_device_overridden,
+                    on_power_change=self.record_power_change,
                 )
                 self.automations.append(schedule_auto)
 
@@ -189,8 +242,9 @@ class SmartHomeApplication:
                     min_cycle_seconds=c_cfg.min_cycle_seconds,
                     exclusion_checker=(schedule_auto.is_room_excluded if schedule_auto else None),
                     override_checker=self.is_device_overridden,
+                    on_power_change=self.record_power_change,
                 )
-                condensation_auto._last_power_change = prev_power_change
+                condensation_auto._last_power_change = dict(prev_power_change)
                 self.automations.append(condensation_auto)
 
             # 3. Health, Tank-Full & Low-Battery Alerts
@@ -207,24 +261,25 @@ class SmartHomeApplication:
 
     def evaluate_cycle(self) -> list[str]:
         """
-        Poll telemetry across all devices without holding the global state lock,
-        then evaluate registered automations and record room history atomically.
+        Poll telemetry and run automations without holding the global state lock
+        across network/hardware I/O, then update state and record room history.
         """
-        with self._lock:
-            devices = list(self.registry.all_devices())
+        with self._eval_lock:
+            with self._lock:
+                devices = list(self.registry.all_devices())
+                automations = list(self.automations)
 
-        # 1. Refresh devices outside the global lock so Web UI requests never stall on BLE/LAN I/O
-        for dev in devices:
-            try:
-                dev.refresh()
-            except Exception as e:
-                logger.warning("Error refreshing device %s: %s", dev.name, e)
+            # 1. Refresh devices outside the global lock so Web UI requests never stall
+            for dev in devices:
+                try:
+                    dev.refresh()
+                except Exception as e:
+                    logger.warning("Error refreshing device %s: %s", dev.name, e)
 
-        # 2. Run in-memory automations and record history under lock
-        with self._lock:
+            # 2. Evaluate automations outside self._lock (Tuya TCP + webhooks run here)
             results: list[str] = []
             cond_auto: CondensationPreventionAutomation | None = None
-            for auto in self.automations:
+            for auto in automations:
                 if isinstance(auto, CondensationPreventionAutomation):
                     cond_auto = auto
                 try:
@@ -235,53 +290,64 @@ class SmartHomeApplication:
                     results.append(f"ERROR: {auto.name} failed: {e}")
 
             now_ts = time.time()
-            self.last_evaluation_logs = list(results)
-            self.last_evaluation_time = now_ts
 
-            # 3. Record historical room psychrometric snapshot
-            if cond_auto:
-                rooms_to_record = [
-                    r
-                    for r in self.registry.all_rooms()
-                    if r != "outdoor"
-                    and any(
-                        dev.has_trait(TemperatureSensorTrait)
-                        or dev.has_trait(HumiditySensorTrait)
-                        or dev.has_trait(HumidityControlTrait)
-                        for dev in self.registry.get_by_room(r)
-                    )
-                ]
-                for room in rooms_to_record:
-                    try:
-                        dehum = next(
-                            (
-                                d
-                                for d in self.registry.find_devices_with_trait(HumidityControlTrait)
-                                if d.room == room
-                            ),
-                            None,
+            # 3. Update dashboard logs and record historical room psychrometric snapshot
+            with self._lock:
+                self.last_evaluation_logs = list(results)
+                self.last_evaluation_time = now_ts
+
+                if cond_auto:
+                    rooms_to_record = [
+                        r
+                        for r in self.registry.all_rooms()
+                        if r != "outdoor"
+                        and any(
+                            dev.has_trait(TemperatureSensorTrait)
+                            or dev.has_trait(HumiditySensorTrait)
+                            or dev.has_trait(HumidityControlTrait)
+                            for dev in self.registry.get_by_room(r)
                         )
-                        r_status = cond_auto.compute_room_status(self.registry, room, dehum)
-                        on_off = dehum.get_trait(OnOffTrait) if dehum else None
-                        is_on = on_off.is_on if on_off else None
-                        flags = dehum.get_trait(StatusFlagsTrait) if dehum else None
-                        is_defrost = (
-                            ("defrost" in flags.status_flags) if flags is not None else None
-                        )
-                        self.history_store.record_room_snapshot(
-                            room=room,
-                            status=r_status,
-                            is_on=is_on,
-                            is_defrost=is_defrost,
-                            timestamp=now_ts,
-                        )
-                    except Exception as e:
-                        logger.warning("Failed to record history snapshot for %s: %s", room, e)
+                    ]
+                    for room in rooms_to_record:
+                        try:
+                            dehum = next(
+                                (
+                                    d
+                                    for d in self.registry.find_devices_with_trait(
+                                        HumidityControlTrait
+                                    )
+                                    if d.room == room
+                                ),
+                                None,
+                            )
+                            r_status = cond_auto.compute_room_status(self.registry, room, dehum)
+                            on_off = dehum.get_trait(OnOffTrait) if dehum else None
+                            is_on = on_off.is_on if on_off else None
+                            flags = dehum.get_trait(StatusFlagsTrait) if dehum else None
+                            is_defrost = (
+                                ("defrost" in flags.status_flags) if flags is not None else None
+                            )
+                            self.history_store.record_room_snapshot(
+                                room=room,
+                                status=r_status,
+                                is_on=is_on,
+                                is_defrost=is_defrost,
+                                timestamp=now_ts,
+                            )
+                        except Exception as e:
+                            logger.warning("Failed to record history snapshot for %s: %s", room, e)
 
             return results
 
     def update_config(self, updated_dict: dict[str, Any]) -> None:
         """Apply modified configuration, persist to disk, and reconfigure automations."""
+        if not isinstance(updated_dict, dict):
+            raise ValueError("Configuration update payload must be a JSON object.")
+
+        disallowed = sorted(set(updated_dict.keys()) - EDITABLE_CONFIG_KEYS)
+        if disallowed:
+            raise ValueError(f"Unsupported or read-only config section(s): {', '.join(disallowed)}")
+
         weather_to_refresh: OpenMeteoWeatherDevice | None = None
         with self._lock:
             # Merge updated_dict onto current config to preserve unedited keys
@@ -292,10 +358,13 @@ class SmartHomeApplication:
                 else:
                     merged[k] = v
 
-            prev_loc = self.config.location
             raw_path = self.config.raw_path
             new_cfg = SmartHomeConfig.from_dict(merged)
             new_cfg.raw_path = raw_path
+
+            if raw_path:
+                new_cfg.save()
+                logger.info("Saved configuration updates to %s", raw_path)
 
             self.config = new_cfg
             self._setup_automations()
@@ -303,23 +372,13 @@ class SmartHomeApplication:
             # Update live weather station if location changed
             weather_dev = self.registry.get("weather_outdoor")
             if isinstance(weather_dev, OpenMeteoWeatherDevice):
-                loc_changed = (
-                    weather_dev.latitude != new_cfg.location.latitude
-                    or weather_dev.longitude != new_cfg.location.longitude
-                    or prev_loc.city != new_cfg.location.city
+                loc_changed = weather_dev.update_location(
+                    new_cfg.location.latitude,
+                    new_cfg.location.longitude,
+                    f"Weather Station ({new_cfg.location.city})",
                 )
-                weather_dev.latitude = new_cfg.location.latitude
-                weather_dev.longitude = new_cfg.location.longitude
-                weather_dev.name = f"Weather Station ({new_cfg.location.city})"
                 if loc_changed:
                     weather_to_refresh = weather_dev
-
-            if self.config.raw_path:
-                try:
-                    self.config.save()
-                    logger.info("Saved configuration updates to %s", self.config.raw_path)
-                except Exception as e:
-                    logger.error("Failed to save config to disk: %s", e)
 
         # Perform network/hardware I/O outside self._lock
         if weather_to_refresh is not None:
@@ -355,8 +414,10 @@ class SmartHomeApplication:
             if not on_off:
                 return False, f"Device '{dev.name}' does not support power on/off."
             ok = on_off.turn_on()
-            if ok and default_hold > 0:
-                self.set_manual_override(device_id, default_hold)
+            if ok:
+                self.record_power_change(device_id)
+                if default_hold > 0:
+                    self.set_manual_override(device_id, default_hold)
             return ok, f"Turned ON '{dev.name}'" if ok else f"Failed to turn ON '{dev.name}'"
 
         elif action == "turn_off":
@@ -364,8 +425,10 @@ class SmartHomeApplication:
             if not on_off:
                 return False, f"Device '{dev.name}' does not support power on/off."
             ok = on_off.turn_off()
-            if ok and default_hold > 0:
-                self.set_manual_override(device_id, default_hold)
+            if ok:
+                self.record_power_change(device_id)
+                if default_hold > 0:
+                    self.set_manual_override(device_id, default_hold)
             return ok, f"Turned OFF '{dev.name}'" if ok else f"Failed to turn OFF '{dev.name}'"
 
         elif action == "set_target":
@@ -532,33 +595,40 @@ class SmartHomeApplication:
             len(self.registry.all_rooms()),
         )
 
-        while self._running:
-            try:
-                cycle_logs = self.evaluate_cycle()
-                for log_msg in cycle_logs:
-                    logger.info("[Automation] %s", log_msg)
-            except Exception as e:
-                logger.error("Error during automation cycle: %s", e, exc_info=True)
+        try:
+            while self._running:
+                try:
+                    cycle_logs = self.evaluate_cycle()
+                    for log_msg in cycle_logs:
+                        logger.info("[Automation] %s", log_msg)
+                except Exception as e:
+                    logger.error("Error during automation cycle: %s", e, exc_info=True)
 
-            for _ in range(interval):
-                if not self._running:
-                    break
-                time.sleep(1.0)
-
-        if self._web_server:
-            self._web_server.stop()
-        logger.info("Smart Home System shut down cleanly.")
+                for _ in range(interval):
+                    if not self._running:
+                        break
+                    time.sleep(1.0)
+        finally:
+            self.stop()
+            logger.info("Smart Home System shut down cleanly.")
 
     def stop(self) -> None:
-        self._running = False
-        if self._web_server:
-            self._web_server.stop()
+        with self._lock:
+            self._running = False
+            if self._closed:
+                return
+            self._closed = True
+            web_server = self._web_server
+            self._web_server = None
+
+        if web_server:
+            web_server.stop()
         self.history_store.close()
 
     def _register_signals(self) -> None:
         def handle_signal(sig, frame):
-            logger.info("Received termination signal (%s). Exiting...", sig)
-            self.stop()
+            # Signal handlers must stay async-signal-safe: only set the loop exit flag.
+            self._running = False
 
         signal.signal(signal.SIGINT, handle_signal)
         signal.signal(signal.SIGTERM, handle_signal)

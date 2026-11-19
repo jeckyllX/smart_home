@@ -216,3 +216,15 @@ def test_cli_service_unit(monkeypatch, capsys):
     assert "User=pi" in out
     assert "web --port 9000" in out
     assert "[Install]" in out
+
+
+def test_cli_service_unit_user_scope(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "sys.argv", ["smarthome", "service-unit", "--scope", "user", "--port", "9000"]
+    )
+    cli.main()
+    out = capsys.readouterr().out
+    assert "[Unit]" in out
+    assert "User=" not in out
+    assert "daemon --port 9000" in out
+    assert "WantedBy=default.target" in out

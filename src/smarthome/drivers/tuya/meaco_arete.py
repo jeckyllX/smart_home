@@ -15,6 +15,7 @@ import tinytuya
 from smarthome.core.events import (
     CommandDispatchedEvent,
     DeviceStateChangedEvent,
+    Event,
     EventBus,
     TelemetryEvent,
 )
@@ -103,42 +104,50 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
 
     @property
     def is_online(self) -> bool:
-        return self._is_online
+        with self._lock:
+            return self._is_online
 
     def refresh(self) -> bool:
+        events: list[Event] = []
+        ok = False
         with self._lock:
             try:
                 status = self._client.status()
                 if isinstance(status, dict) and "dps" in status:
-                    new_dps = status["dps"]
+                    new_dps = dict(status["dps"])
                     self._is_online = True
-                    self._dispatch_changes(self._cached_dps, new_dps)
+                    events = self._collect_changes(self._cached_dps, new_dps)
                     self._cached_dps = new_dps
-                    return True
+                    ok = True
                 else:
                     self._is_online = False
                     logger.warning(
                         "Device '%s' returned invalid status payload: %s", self.name, status
                     )
-                    return False
             except Exception as e:
                 self._is_online = False
                 logger.error("Error refreshing device '%s': %s", self.name, e)
-                return False
+
+        if self.event_bus:
+            for ev in events:
+                self.event_bus.publish(ev)
+        return ok
 
     @property
     def raw_dps(self) -> dict[str, Any]:
         """Copy of the last raw data points read from the device."""
-        return dict(self._cached_dps)
+        with self._lock:
+            return dict(self._cached_dps)
 
-    def _dispatch_changes(self, old_dps: dict[str, Any], new_dps: dict[str, Any]) -> None:
+    def _collect_changes(self, old_dps: dict[str, Any], new_dps: dict[str, Any]) -> list[Event]:
+        events: list[Event] = []
         if not self.event_bus:
-            return
+            return events
 
         if old_dps:
             # Power change
             if old_dps.get(self.DP_POWER) != new_dps.get(self.DP_POWER):
-                self.event_bus.publish(
+                events.append(
                     DeviceStateChangedEvent(
                         device_id=self.id,
                         trait_name="OnOffTrait",
@@ -150,7 +159,7 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
 
             # Mode change
             if old_dps.get(self.DP_MODE) != new_dps.get(self.DP_MODE):
-                self.event_bus.publish(
+                events.append(
                     DeviceStateChangedEvent(
                         device_id=self.id,
                         trait_name="ModeControlTrait",
@@ -163,7 +172,7 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
         # Humidity Telemetry
         cur_rh = new_dps.get(self.DP_CURRENT_HUMIDITY)
         if cur_rh is not None and cur_rh != old_dps.get(self.DP_CURRENT_HUMIDITY):
-            self.event_bus.publish(
+            events.append(
                 TelemetryEvent(
                     device_id=self.id,
                     metric="relative_humidity",
@@ -171,12 +180,20 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
                     unit="%",
                 )
             )
+        return events
+
+    def _dispatch_changes(self, old_dps: dict[str, Any], new_dps: dict[str, Any]) -> None:
+        if not self.event_bus:
+            return
+        for ev in self._collect_changes(old_dps, new_dps):
+            self.event_bus.publish(ev)
 
     # --- OnOffTrait ---
 
     @property
     def is_on(self) -> bool:
-        return bool(self._cached_dps.get(self.DP_POWER, False))
+        with self._lock:
+            return bool(self._cached_dps.get(self.DP_POWER, False))
 
     def turn_on(self) -> bool:
         return self._send_command(self.DP_POWER, True, "turn_on")
@@ -188,15 +205,17 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
 
     @property
     def humidity_percent(self) -> float | None:
-        val = self._cached_dps.get(self.DP_CURRENT_HUMIDITY)
-        return float(val) if val is not None else None
+        with self._lock:
+            val = self._cached_dps.get(self.DP_CURRENT_HUMIDITY)
+            return float(val) if val is not None else None
 
     # --- HumidityControlTrait ---
 
     @property
     def target_humidity_percent(self) -> int | None:
-        val = self._cached_dps.get(self.DP_TARGET_HUMIDITY)
-        return int(val) if val is not None else None
+        with self._lock:
+            val = self._cached_dps.get(self.DP_TARGET_HUMIDITY)
+            return int(val) if val is not None else None
 
     @property
     def humidity_range(self) -> tuple[int, int]:
@@ -215,7 +234,8 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
 
     @property
     def current_mode(self) -> str:
-        return str(self._cached_dps.get(self.DP_MODE, "manual"))
+        with self._lock:
+            return str(self._cached_dps.get(self.DP_MODE, "manual"))
 
     @property
     def supported_modes(self) -> list[str]:
@@ -226,13 +246,24 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
         if mode_str not in self.MODES:
             raise ValueError(f"Mode '{mode}' not supported. Options: {self.MODES}")
 
-        # The Meaco Arete firmware requires a night mode exit toggle before accepting
-        # a transition to another operational mode (mimicking physical double-press requirement).
-        if self.current_mode == "sleep" and mode_str != "sleep":
-            self._send_command(self.DP_MODE, "sleep", "exit_sleep_wake")
-            time.sleep(0.5)
+        events: list[Event] = []
+        with self._lock:
+            # The Meaco Arete firmware requires a night mode exit toggle before accepting
+            # a transition to another operational mode (physical double-press requirement).
+            if self.current_mode == "sleep" and mode_str != "sleep":
+                _, wake_ev = self._send_command_locked(self.DP_MODE, "sleep", "exit_sleep_wake")
+                if wake_ev is not None:
+                    events.append(wake_ev)
+                time.sleep(0.5)
 
-        return self._send_command(self.DP_MODE, mode_str, "set_mode")
+            success, mode_ev = self._send_command_locked(self.DP_MODE, mode_str, "set_mode")
+            if mode_ev is not None:
+                events.append(mode_ev)
+
+        if self.event_bus:
+            for ev in events:
+                self.event_bus.publish(ev)
+        return success
 
     # --- TankLevelTrait & StatusFlagsTrait ---
 
@@ -245,7 +276,8 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
         sensor reads high on this unit and the flag is also set while the device
         is off, so 'wet' is informational only. 'defrost' is normal operation.
         """
-        code = self._cached_dps.get(self.DP_STATUS_FLAGS, 0)
+        with self._lock:
+            code = self._cached_dps.get(self.DP_STATUS_FLAGS, 0)
         try:
             return decode_status_flags(int(code or 0))
         except (TypeError, ValueError):
@@ -257,26 +289,31 @@ class MeacoAreteTuyaDevice(DehumidifierDevice):
 
     # --- Socket Command Helper ---
 
+    def _send_command_locked(self, dp: str, value: Any, cmd_name: str) -> tuple[bool, Event | None]:
+        try:
+            res = self._client.set_value(dp, value)
+            success = res is not None and "Error" not in res
+            if success:
+                self._cached_dps[dp] = value
+            ev: Event | None = None
+            if self.event_bus:
+                ev = CommandDispatchedEvent(
+                    device_id=self.id,
+                    command=cmd_name,
+                    arguments={"dp": dp, "value": value},
+                    success=success,
+                )
+            return success, ev
+        except Exception as e:
+            logger.error("Failed to send command %s to device '%s': %s", cmd_name, self.name, e)
+            return False, None
+
     def _send_command(self, dp: str, value: Any, cmd_name: str) -> bool:
         with self._lock:
-            try:
-                res = self._client.set_value(dp, value)
-                success = res is not None and "Error" not in res
-                if success:
-                    self._cached_dps[dp] = value
-                if self.event_bus:
-                    self.event_bus.publish(
-                        CommandDispatchedEvent(
-                            device_id=self.id,
-                            command=cmd_name,
-                            arguments={"dp": dp, "value": value},
-                            success=success,
-                        )
-                    )
-                return success
-            except Exception as e:
-                logger.error("Failed to send command %s to device '%s': %s", cmd_name, self.name, e)
-                return False
+            success, ev = self._send_command_locked(dp, value, cmd_name)
+        if self.event_bus and ev is not None:
+            self.event_bus.publish(ev)
+        return success
 
 
 class TuyaDriver(Driver):

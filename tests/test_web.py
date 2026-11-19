@@ -5,6 +5,7 @@ Integration tests for the embedded Smart Home Web Server and REST API.
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -199,9 +200,65 @@ def test_web_server_endpoints(tmp_path: Path):
         with urllib.request.urlopen(req) as resp:
             assert resp.status == 200
             all_hist = json.loads(resp.read().decode("utf-8"))
-            assert "rooms" in all_hist
-            assert "bedroom" in all_hist["rooms"]
-            assert "living_room" in all_hist["rooms"]
+        assert "rooms" in all_hist
+        assert "bedroom" in all_hist["rooms"]
+        assert "living_room" in all_hist["rooms"]
+
+        # 8. Test HEAD returns 200 with empty body and Content-Length header
+        req = urllib.request.Request(f"{base_url}/api/state", method="HEAD")
+        with urllib.request.urlopen(req) as resp:
+            assert resp.status == 200
+            assert resp.read() == b""
+            assert int(resp.headers.get("Content-Length", "0")) > 0
+            assert resp.headers.get("Access-Control-Allow-Origin") is None
+
+        req = urllib.request.Request(f"{base_url}/", method="HEAD")
+        with urllib.request.urlopen(req) as resp:
+            assert resp.status == 200
+            assert resp.read() == b""
+
+        # 9. PUT /api/config must reject read-only sections (devices) and invalid values
+        bad_devices_payload = json.dumps(
+            {
+                "devices": [
+                    {
+                        "type": "tuya",
+                        "ip": "127.0.0.1",
+                        "dev_id": "test_dh",
+                        "local_key": "********",
+                    }
+                ]
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base_url}/api/config",
+            data=bad_devices_payload,
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        try:
+            urllib.request.urlopen(req)
+            raise AssertionError("Expected HTTPError 400 when updating read-only 'devices'")
+        except urllib.error.HTTPError as err:
+            assert err.code == 400
+
+        bad_time_payload = json.dumps({"quiet_schedule": {"start_time": "99:99"}}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base_url}/api/config",
+            data=bad_time_payload,
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        try:
+            urllib.request.urlopen(req)
+            raise AssertionError("Expected HTTPError 400 for invalid HH:MM")
+        except urllib.error.HTTPError as err:
+            assert err.code == 400
+
+        # Original local_key must remain intact on disk
+        reloaded = SmartHomeConfig.from_file(tmp_path / "config.json")
+        assert reloaded.tuya_devices[0]["local_key"] == "secret1234567890"
 
     finally:
         server.stop()
+        app.history_store.close()

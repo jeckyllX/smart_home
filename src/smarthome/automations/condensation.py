@@ -73,6 +73,7 @@ class CondensationPreventionAutomation(Automation):
         min_cycle_seconds: int = 600,
         exclusion_checker: Callable[[str, datetime | None], tuple[bool, Any]] | None = None,
         override_checker: Callable[[str, float | None], tuple[bool, int]] | None = None,
+        on_power_change: Callable[[str, float], None] | None = None,
     ):
         super().__init__(name=name, enabled=enabled)
         self.outdoor_room = outdoor_room
@@ -90,6 +91,7 @@ class CondensationPreventionAutomation(Automation):
         self.min_cycle_seconds = min_cycle_seconds
         self.exclusion_checker = exclusion_checker
         self.override_checker = override_checker
+        self.on_power_change = on_power_change
         self._last_power_change: dict[str, float] = {}
 
     def compute_room_status(
@@ -156,9 +158,12 @@ class CondensationPreventionAutomation(Automation):
         if self.override_checker and dehum_dev:
             is_overridden, override_rem = self.override_checker(dehum_dev.id, now_ts)
 
-        target_base = safe_target_rh or 55
-        turn_on_rh = target_base + self.turn_on_offset_rh
-        turn_off_rh = target_base - self.turn_off_offset_rh
+        turn_on_rh = (
+            (safe_target_rh + self.turn_on_offset_rh) if safe_target_rh is not None else None
+        )
+        turn_off_rh = (
+            (safe_target_rh - self.turn_off_offset_rh) if safe_target_rh is not None else None
+        )
 
         return {
             "indoor_temp_c": indoor_temp,
@@ -302,11 +307,15 @@ class CondensationPreventionAutomation(Automation):
                 is_held, rem_sec = self.override_checker(dehum_dev.id, now_ts)
                 if is_held:
                     log_entry += f" [MANUAL HOLD: {max(1, rem_sec // 60)}m remaining]"
+                    if indoor_rh > raw_safe_rh:
+                        log_entry += " [CONDENSATION RISK ACTIVE]"
                     logs.append(log_entry)
                     continue
 
             if is_excluded:
                 log_entry += f" [EXCLUDED: '{ex_label}' - power blocked]"
+                if indoor_rh > raw_safe_rh:
+                    log_entry += " [CONDENSATION RISK ACTIVE]"
                 logs.append(log_entry)
                 continue
 
@@ -342,6 +351,8 @@ class CondensationPreventionAutomation(Automation):
                     if cooldown_ready:
                         if on_off.turn_on():
                             self._last_power_change[dehum_dev.id] = now_ts
+                            if self.on_power_change:
+                                self.on_power_change(dehum_dev.id, now_ts)
                             log_entry += (
                                 f" [ACTION: Auto Turned ON (RH {indoor_rh:.0f}% >= "
                                 f"{turn_on_threshold:.1f}%)]"
@@ -356,6 +367,8 @@ class CondensationPreventionAutomation(Automation):
                     if cooldown_ready:
                         if on_off.turn_off():
                             self._last_power_change[dehum_dev.id] = now_ts
+                            if self.on_power_change:
+                                self.on_power_change(dehum_dev.id, now_ts)
                             log_entry += (
                                 f" [ACTION: Auto Turned OFF (RH {indoor_rh:.0f}% <= "
                                 f"{turn_off_threshold:.1f}%)]"
