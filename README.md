@@ -129,9 +129,10 @@ older than `history_retention_days`.
 - `server.py` — HTTP API and background web server (`web.host`, `web.port`,
   default `8765`) started alongside `daemon` or standalone via `web`. Exposes
   `/api/status`, `/api/history`, `/api/config`, and `/api/control`.
-- `ui.py` — single-page dashboard showing live device cards, psychrometrics,
-  24h SVG climate charts (shading `ON` in blue and `Defrost` in purple), manual
-  override controls, and config editor.
+- `ui.py` & `static/` (`index.html`, `styles.css`, `app.js`) — single-page
+  dashboard showing outdoor summary strip, live room/device cards, condensation
+  safety badges, interactive 6h–7d SVG climate charts (`ON` in blue, `Defrost`
+  in purple, risk shading in red), manual override controls, and config editor.
 
 ### `src/smarthome/physics/psychrometrics.py`
 Magnus-Tetens dew point and its inverse (`calculate_dew_point`,

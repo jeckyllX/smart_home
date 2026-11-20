@@ -259,6 +259,32 @@ def test_web_server_endpoints(tmp_path: Path):
         reloaded = SmartHomeConfig.from_file(tmp_path / "config.json")
         assert reloaded.tuya_devices[0]["local_key"] == "secret1234567890"
 
+        # 10. Static CSS & JS assets served cleanly and path traversal rejected
+        for asset_path, expected_ctype, snippet in [
+            ("/static/styles.css", "text/css", "--primary"),
+            ("/static/app.js", "application/javascript", "renderRooms"),
+        ]:
+            req = urllib.request.Request(f"{base_url}{asset_path}")
+            with urllib.request.urlopen(req) as resp:
+                assert resp.status == 200
+                assert expected_ctype in (resp.headers.get("Content-Type") or "")
+                body_text = resp.read().decode("utf-8")
+                assert snippet in body_text
+
+        req = urllib.request.Request(f"{base_url}/static/app.js", method="HEAD")
+        with urllib.request.urlopen(req) as resp:
+            assert resp.status == 200
+            assert resp.read() == b""
+            assert int(resp.headers.get("Content-Length", "0")) > 0
+
+        for bad_static in ("/static/nonexistent.js", "/static/../server.py"):
+            req = urllib.request.Request(f"{base_url}{bad_static}")
+            try:
+                urllib.request.urlopen(req)
+                raise AssertionError(f"Expected HTTPError 404 for {bad_static}")
+            except urllib.error.HTTPError as err:
+                assert err.code == 404
+
     finally:
         server.stop()
         app.history_store.close()

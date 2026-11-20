@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
-from smarthome.web.ui import DASHBOARD_HTML
+from smarthome.web.ui import load_static_asset
 
 if TYPE_CHECKING:
     from smarthome.app import SmartHomeApplication
@@ -33,25 +33,28 @@ class SmartHomeRequestHandler(BaseHTTPRequestHandler):
             "%s - - [%s] %s", self.address_string(), self.log_date_time_string(), format % args
         )
 
-    def _send_json(self, data: Any, status: int = HTTPStatus.OK, send_body: bool = True) -> None:
-        payload = json.dumps(data, indent=2).encode("utf-8")
+    def _send_bytes(
+        self,
+        payload: bytes,
+        content_type: str,
+        status: int = HTTPStatus.OK,
+        send_body: bool = True,
+        cache_control: str | None = None,
+    ) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         self.end_headers()
         if send_body:
             self.wfile.write(payload)
 
-    def _send_html(
-        self, html_str: str, status: int = HTTPStatus.OK, send_body: bool = True
-    ) -> None:
-        payload = html_str.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        if send_body:
-            self.wfile.write(payload)
+    def _send_json(self, data: Any, status: int = HTTPStatus.OK, send_body: bool = True) -> None:
+        payload = json.dumps(data, indent=2).encode("utf-8")
+        self._send_bytes(
+            payload, "application/json; charset=utf-8", status=status, send_body=send_body
+        )
 
     def _read_json_body(self) -> tuple[dict[str, Any] | None, str | None, int]:
         raw_len = self.headers.get("Content-Length", "0")
@@ -96,7 +99,26 @@ class SmartHomeRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path in ("/", "/index.html"):
-            self._send_html(DASHBOARD_HTML, send_body=send_body)
+            asset = load_static_asset("index.html")
+            if asset is None:
+                self._send_json(
+                    {"error": "Dashboard asset not found"},
+                    status=HTTPStatus.NOT_FOUND,
+                    send_body=send_body,
+                )
+                return
+            payload, content_type = asset
+            self._send_bytes(payload, content_type, send_body=send_body, cache_control="no-cache")
+        elif path.startswith("/static/"):
+            asset_name = path[len("/static/") :]
+            asset = load_static_asset(asset_name)
+            if asset is None:
+                self._send_json(
+                    {"error": "Not Found"}, status=HTTPStatus.NOT_FOUND, send_body=send_body
+                )
+                return
+            payload, content_type = asset
+            self._send_bytes(payload, content_type, send_body=send_body, cache_control="no-cache")
         elif path == "/api/state":
             state = self.server.app.get_dashboard_state()
             self._send_json(state, send_body=send_body)
