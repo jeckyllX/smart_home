@@ -92,60 +92,7 @@ class QuietScheduleAutomation(Automation):
         effective_night_day = self._effective_weekday(self.start_time, self.end_time, now)
         logs: list[str] = []
 
-        # 1. Determine target operational mode
-        if weekday in self.all_day_sleep_days:
-            is_night = True
-            profile_label = "All-Day Sleep"
-        elif effective_night_day in self.night_days and self._is_in_window(
-            self.start_time, self.end_time, now.time()
-        ):
-            is_night = True
-            profile_label = "Night"
-        else:
-            is_night = False
-            profile_label = "Day"
-
-        target_mode = self.night_mode if is_night else self.day_mode
-
-        # 2. Synchronize operational mode before exclusions turn OFF devices
-        #    (skip devices that are already OFF so mode changes never wake/lock firmware)
-        mode_devices = registry.find_devices_with_trait(ModeControlTrait)
-        for dev in mode_devices:
-            if not dev.is_online:
-                continue
-            if self.rooms and dev.room.lower() not in [r.lower() for r in self.rooms]:
-                continue
-
-            on_off = dev.get_trait(OnOffTrait)
-            if on_off is not None and not on_off.is_on:
-                continue
-
-            if self.override_checker:
-                is_held, rem_sec = self.override_checker(dev.id, now.timestamp())
-                if is_held:
-                    logs.append(
-                        f"Room '{dev.room}': {dev.name} schedule sync skipped "
-                        f"[MANUAL HOLD: {max(1, rem_sec // 60)}m remaining]."
-                    )
-                    continue
-
-            mode_trait = dev.require_trait(ModeControlTrait)
-            if target_mode not in mode_trait.supported_modes:
-                continue
-
-            if mode_trait.current_mode != target_mode:
-                success = mode_trait.set_mode(target_mode)
-                if success:
-                    logs.append(
-                        f"Room '{dev.room}': {dev.name} switched to '{target_mode}' "
-                        f"({profile_label} profile)."
-                    )
-                else:
-                    logs.append(
-                        f"Room '{dev.room}': Failed to switch {dev.name} to '{target_mode}'."
-                    )
-
-        # 3. Enforce active exclusion windows on OnOff devices
+        # 1. Enforce active exclusion windows on OnOff devices
         power_devices = registry.find_devices_with_trait(OnOffTrait)
         for dev in power_devices:
             if not dev.is_online:
@@ -174,6 +121,54 @@ class QuietScheduleAutomation(Automation):
                         logs.append(
                             f"Room '{dev.room}': Failed to turn OFF {dev.name} for exclusion."
                         )
+
+        # 2. Determine target operational mode
+        if weekday in self.all_day_sleep_days:
+            is_night = True
+            profile_label = "All-Day Sleep"
+        elif effective_night_day in self.night_days and self._is_in_window(
+            self.start_time, self.end_time, now.time()
+        ):
+            is_night = True
+            profile_label = "Night"
+        else:
+            is_night = False
+            profile_label = "Day"
+
+        target_mode = self.night_mode if is_night else self.day_mode
+
+        # 3. Synchronize operational mode
+        mode_devices = registry.find_devices_with_trait(ModeControlTrait)
+        for dev in mode_devices:
+            if not dev.is_online:
+                continue
+            if self.rooms and dev.room.lower() not in [r.lower() for r in self.rooms]:
+                continue
+
+            if self.override_checker:
+                is_held, rem_sec = self.override_checker(dev.id, now.timestamp())
+                if is_held:
+                    logs.append(
+                        f"Room '{dev.room}': {dev.name} schedule sync skipped "
+                        f"[MANUAL HOLD: {max(1, rem_sec // 60)}m remaining]."
+                    )
+                    continue
+
+            mode_trait = dev.require_trait(ModeControlTrait)
+            if target_mode not in mode_trait.supported_modes:
+                continue
+
+            if mode_trait.current_mode != target_mode:
+                success = mode_trait.set_mode(target_mode)
+                if success:
+                    logs.append(
+                        f"Room '{dev.room}': {dev.name} switched to '{target_mode}' "
+                        f"({profile_label} profile)."
+                    )
+                else:
+                    logs.append(
+                        f"Room '{dev.room}': Failed to switch {dev.name} to '{target_mode}'."
+                    )
 
         if not logs:
             logs.append(f"Quiet hours evaluated (Active={profile_label}, all profiles in sync).")

@@ -117,62 +117,6 @@ def test_night_days_filter():
     assert dehum.current_mode == "manual"
 
 
-def test_schedule_skips_mode_sync_when_device_is_off():
-    registry = DeviceRegistry()
-    event_bus = EventBus()
-
-    dehum = VirtualDehumidifier(device_id="dh_bedroom", name="Bedroom Unit", room="bedroom")
-    dehum.turn_off()
-    dehum.set_mode("manual")
-    assert dehum.is_on is False
-    registry.register(dehum)
-
-    automation = QuietScheduleAutomation(
-        start_time="23:00",
-        end_time="08:00",
-        night_mode="sleep",
-        day_mode="manual",
-    )
-
-    night_time = datetime(2026, 10, 16, 23, 0)
-    automation.evaluate(registry, event_bus, current_dt=night_time)
-    assert dehum.current_mode == "manual"
-
-
-def test_exclusion_switches_to_day_mode_before_turning_off():
-    from smarthome.config.schema import ExclusionWindowConfig
-
-    registry = DeviceRegistry()
-    event_bus = EventBus()
-
-    dehum = VirtualDehumidifier(device_id="dh_bedroom", name="Bedroom Unit", room="bedroom")
-    dehum.turn_on()
-    dehum.set_mode("sleep")
-    registry.register(dehum)
-
-    exclusion = ExclusionWindowConfig(
-        label="Daytime Peak",
-        start_time="08:00",
-        end_time="23:00",
-        days=["fri"],
-        enabled=True,
-    )
-    automation = QuietScheduleAutomation(
-        start_time="23:00",
-        end_time="08:00",
-        night_mode="sleep",
-        day_mode="manual",
-        exclusion_windows=[exclusion],
-    )
-
-    # 2026-10-16 is a Friday at 08:01 (just after night window ends at 08:00)
-    morning_time = datetime(2026, 10, 16, 8, 1)
-    automation.evaluate(registry, event_bus, current_dt=morning_time)
-
-    assert dehum.current_mode == "manual"
-    assert dehum.is_on is False
-
-
 def test_half_open_window_boundaries_and_overnight_weekday_rollover():
     from smarthome.config.schema import ExclusionWindowConfig
 
